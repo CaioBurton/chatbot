@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     # CORS — stored as comma-separated string in env; split at use-time to avoid
     # pydantic-settings attempting JSON-parse on a plain string value.
     ALLOWED_ORIGINS: str = "http://localhost:3000"
+
+    # Reranker
+    RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
+    RERANKER_TOP_K: int = Field(5, ge=1, le=100)
+    RERANKER_SCORE_THRESHOLD: float = Field(0.5, ge=0.0, le=1.0)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

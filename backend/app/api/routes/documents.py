@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import require_admin
 from app.db.postgres import get_db
 from app.db.qdrant import COLLECTION_NAME, get_qdrant_client
+from app.db.reranker import rerank
 from app.db.search import hybrid_search
 from app.ingestion.processor import process_document
 from app.models.document import Document
@@ -327,6 +328,15 @@ async def search_documents(
         top_k=body.top_k,
         score_threshold=body.score_threshold,
     )
+
+    if body.rerank:
+        points = await rerank(
+            query=body.query,
+            points=points,
+            top_k=body.reranker_top_k,
+            score_threshold=body.reranker_score_threshold,
+        )
+
     return [
         SearchResultItem(
             chunk_id=str(point.id),
@@ -336,6 +346,7 @@ async def search_documents(
             page_number=point.payload.get("page_number", 0),
             text_preview=point.payload.get("text_preview", ""),
             chunk_index=point.payload.get("chunk_index", 0),
+            rerank_score=point.payload.get("rerank_score"),
         )
         for point in points
     ]
