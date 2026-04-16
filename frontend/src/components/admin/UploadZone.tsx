@@ -1,5 +1,6 @@
-import { useRef, useState, type DragEvent, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type DragEvent, type ChangeEvent } from 'react'
 import { API_BASE } from '../../lib/api'
+import { useIndexingProgress } from '../../hooks/useIndexingProgress'
 
 interface FileEntry {
   id: string            // stable UUID per upload attempt — avoids name-collision bugs
@@ -7,6 +8,7 @@ interface FileEntry {
   progress: number      // 0–100
   status: 'uploading' | 'done' | 'error'
   message?: string
+  docId?: string        // document UUID returned by the server after 202
 }
 
 interface Props {
@@ -19,6 +21,109 @@ function readToken(): string | null {
   } catch {
     return null
   }
+}
+
+// ------------------------------------------------------------------ //
+// Per-entry row — extracted so useIndexingProgress can be called     //
+// as a hook at the component level (hooks cannot be used inside      //
+// array .map() callbacks directly).                                  //
+// ------------------------------------------------------------------ //
+function FileEntryRow({
+  entry,
+  onUpdate,
+}: {
+  entry: FileEntry
+  onUpdate: (patch: Partial<FileEntry>) => void
+}) {
+  const isIndexing = entry.status === 'uploading' && !!entry.docId
+  const { events, done, error } = useIndexingProgress(
+    isIndexing ? (entry.docId as string) : null,
+  )
+
+  // Keep a stable ref to onUpdate so the effect below doesn't re-run every
+  // time the parent re-renders (which happens on every progress event).
+  const onUpdateRef = useRef(onUpdate)
+  onUpdateRef.current = onUpdate
+
+  const notifiedRef = useRef(false)
+  useEffect(() => {
+    if ((done || error) && !notifiedRef.current) {
+      notifiedRef.current = true
+      onUpdateRef.current(
+        done
+          ? { status: 'done', message: 'Indexado com sucesso.' }
+          : { status: 'error', message: 'Erro na indexação.' },
+      )
+    }
+  }, [done, error])
+
+  const latestEvent = events[events.length - 1]
+
+  return (
+    <li className="rounded-lg border border-[#ddd] dark:border-[#444] bg-white dark:bg-[#1e1e1e] px-4 py-2">
+      <div className="flex items-center justify-between text-sm">
+        <span className="max-w-[70%] overflow-hidden text-ellipsis whitespace-nowrap text-[#111] dark:text-[#e8e8e8]">
+          {entry.name}
+        </span>
+        <span
+          className={
+            entry.status === 'done'
+              ? 'text-green-600 dark:text-green-400'
+              : entry.status === 'error'
+                ? 'text-red-600 dark:text-red-400'
+                : 'text-[#777] dark:text-[#aaa]'
+          }
+        >
+          {entry.status === 'uploading'
+            ? isIndexing
+              ? latestEvent
+                ? `${latestEvent.progress}%`
+                : '…'
+              : `${entry.progress}%`
+            : entry.status === 'done'
+              ? '✓'
+              : '✗'}
+        </span>
+      </div>
+
+      {/* XHR upload progress bar */}
+      {entry.status === 'uploading' && !isIndexing && (
+        <div className="mt-1 h-1 w-full overflow-hidden rounded bg-[#eee] dark:bg-[#444]">
+          <div
+            className="h-full rounded bg-[#0078d4] transition-all"
+            style={{ width: `${entry.progress}%` }}
+          />
+        </div>
+      )}
+
+      {/* Indexing step progress bar */}
+      {isIndexing && (
+        <div className="mt-1 h-1 w-full overflow-hidden rounded bg-[#eee] dark:bg-[#444]">
+          <div
+            className="h-full rounded bg-[#0078d4] transition-all"
+            style={{ width: `${latestEvent ? latestEvent.progress : 0}%` }}
+          />
+        </div>
+      )}
+
+      {/* Latest step description */}
+      {isIndexing && latestEvent && (
+        <p className="mt-1 text-xs text-[#555] dark:text-[#aaa]">{latestEvent.detail}</p>
+      )}
+
+      {entry.message && (
+        <p
+          className={`mt-1 text-xs ${
+            entry.status === 'error'
+              ? 'text-red-600 dark:text-red-400'
+              : 'text-[#555] dark:text-[#aaa]'
+          }`}
+        >
+          {entry.message}
+        </p>
+      )}
+    </li>
+  )
 }
 
 export default function UploadZone({ onUploaded }: Props) {
@@ -54,7 +159,12 @@ export default function UploadZone({ onUploaded }: Props) {
 
     xhr.onload = () => {
       if (xhr.status === 202) {
-        update({ status: 'done', progress: 100, message: 'Enviado com sucesso.' })
+        try {
+          const doc = JSON.parse(xhr.responseText) as { id: string }
+          update({ progress: 100, docId: doc.id })
+        } catch {
+          update({ status: 'done', progress: 100, message: 'Enviado com sucesso.' })
+        }
         onUploaded()
       } else if (xhr.status === 409) {
         update({ status: 'error', message: 'Arquivo duplicado já existe.' })
@@ -85,7 +195,7 @@ export default function UploadZone({ onUploaded }: Props) {
       if (f.type !== 'application/pdf') {
         setFiles(prev => [
           ...prev,
-          { name: f.name, progress: 0, status: 'error', message: 'Apenas PDF aceito.' },
+          { id: `err-${Date.now()}-${Math.random()}`, name: f.name, progress: 0, status: 'error', message: 'Apenas PDF aceito.' },
         ])
         continue
       }
@@ -159,52 +269,13 @@ export default function UploadZone({ onUploaded }: Props) {
       {files.length > 0 && (
         <ul className="flex flex-col gap-2">
           {files.map((f, i) => (
-            <li
+            <FileEntryRow
               key={`${f.name}-${i}`}
-              className="rounded-lg border border-[#ddd] dark:border-[#444] bg-white dark:bg-[#1e1e1e] px-4 py-2"
-            >
-              <div className="flex items-center justify-between text-sm">
-                <span className="max-w-[70%] overflow-hidden text-ellipsis whitespace-nowrap text-[#111] dark:text-[#e8e8e8]">
-                  {f.name}
-                </span>
-                <span
-                  className={
-                    f.status === 'done'
-                      ? 'text-green-600 dark:text-green-400'
-                      : f.status === 'error'
-                        ? 'text-red-600 dark:text-red-400'
-                        : 'text-[#777] dark:text-[#aaa]'
-                  }
-                >
-                  {f.status === 'uploading'
-                    ? `${f.progress}%`
-                    : f.status === 'done'
-                      ? '✓'
-                      : '✗'}
-                </span>
-              </div>
-
-              {f.status === 'uploading' && (
-                <div className="mt-1 h-1 w-full overflow-hidden rounded bg-[#eee] dark:bg-[#444]">
-                  <div
-                    className="h-full rounded bg-[#0078d4] transition-all"
-                    style={{ width: `${f.progress}%` }}
-                  />
-                </div>
-              )}
-
-              {f.message && (
-                <p
-                  className={`mt-1 text-xs ${
-                    f.status === 'error'
-                      ? 'text-red-600 dark:text-red-400'
-                      : 'text-[#555] dark:text-[#aaa]'
-                  }`}
-                >
-                  {f.message}
-                </p>
-              )}
-            </li>
+              entry={f}
+              onUpdate={patch =>
+                setFiles(prev => prev.map(e => (e.id === f.id ? { ...e, ...patch } : e)))
+              }
+            />
           ))}
         </ul>
       )}

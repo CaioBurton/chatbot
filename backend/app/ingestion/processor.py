@@ -13,6 +13,7 @@ from qdrant_client.models import PointStruct
 from sqlalchemy import text, update
 
 from app.core.config import get_settings
+from app.core.progress import publish
 from app.db.postgres import AsyncSessionLocal
 from app.db.qdrant import COLLECTION_NAME, DENSE_VECTOR_NAME, SPARSE_VECTOR_NAME, get_qdrant_client
 from app.ingestion.chunker import chunk_pages
@@ -26,6 +27,14 @@ settings = get_settings()
 
 _EMBED_BATCH_SIZE = 32
 _QDRANT_BATCH_SIZE = 100
+
+
+async def _safe_publish(doc_id: str, event: dict) -> None:
+    """Publish a progress event, swallowing any exception as a warning."""
+    try:
+        publish(doc_id, event)
+    except Exception:
+        logger.warning("Failed to publish progress event for doc_id=%s", doc_id)
 
 
 async def _embed_batch(
@@ -76,14 +85,29 @@ async def process_document(
             # ------------------------------------------------------------------ #
             # 2. Extract text from PDF
             # ------------------------------------------------------------------ #
+            await _safe_publish(document_id, {
+                "step": "extracting",
+                "detail": "Extraindo texto do PDF...",
+                "progress": 10,
+            })
             pages, is_scanned = await extract_pdf(file_path)
 
             if is_scanned:
+                await _safe_publish(document_id, {
+                    "step": "ocr",
+                    "detail": "Aplicando OCR no documento escaneado...",
+                    "progress": 20,
+                })
                 pages = await extract_pdf_ocr(file_path)
 
             # ------------------------------------------------------------------ #
             # 3. Chunk the extracted text
             # ------------------------------------------------------------------ #
+            await _safe_publish(document_id, {
+                "step": "chunking",
+                "detail": "Fragmentando o texto em chunks...",
+                "progress": 35,
+            })
             chunks: list[dict[str, Any]] = await chunk_pages(
                 pages, document_id, original_name
             )
@@ -98,19 +122,32 @@ async def process_document(
                     )
                 )
                 await db.commit()
+                await _safe_publish(document_id, {
+                    "step": "error",
+                    "detail": "Nenhum texto pôde ser extraído do PDF.",
+                    "progress": 100,
+                })
                 return
 
             # ------------------------------------------------------------------ #
             # 4. Embed via Ollama (batched)
             # ------------------------------------------------------------------ #
             texts = [c["text"] for c in chunks]
+            total_texts = len(texts)
             embeddings: list[list[float]] = []
 
             async with httpx.AsyncClient() as http_client:
-                for i in range(0, len(texts), _EMBED_BATCH_SIZE):
+                for i in range(0, total_texts, _EMBED_BATCH_SIZE):
                     batch = texts[i : i + _EMBED_BATCH_SIZE]
                     batch_embeddings = await _embed_batch(http_client, batch)
                     embeddings.extend(batch_embeddings)
+                    batch_end = i + len(batch)
+                    embed_progress = 50 + round((batch_end / total_texts) * 30)
+                    await _safe_publish(document_id, {
+                        "step": "embedding",
+                        "detail": f"Gerando embeddings ({batch_end}/{total_texts} textos)...",
+                        "progress": embed_progress,
+                    })
 
             sparse_vectors = await encode_sparse(texts)
 
@@ -123,6 +160,11 @@ async def process_document(
             # ------------------------------------------------------------------ #
             # 5. Upsert points to Qdrant (batched)
             # ------------------------------------------------------------------ #
+            await _safe_publish(document_id, {
+                "step": "indexing",
+                "detail": "Indexando vetores no Qdrant...",
+                "progress": 85,
+            })
             qdrant = get_qdrant_client()
             points = [
                 PointStruct(
@@ -145,6 +187,11 @@ async def process_document(
             # ------------------------------------------------------------------ #
             # 6. Mirror chunks to PostgreSQL (single executemany round-trip)
             # ------------------------------------------------------------------ #
+            await _safe_publish(document_id, {
+                "step": "saving",
+                "detail": "Salvando chunks no banco de dados...",
+                "progress": 90,
+            })
             chunk_params = [
                 {
                     "document_id": doc_uuid,
@@ -176,6 +223,11 @@ async def process_document(
                 .values(**active_values)
             )
             await db.commit()
+            await _safe_publish(document_id, {
+                "step": "done",
+                "detail": "Documento indexado com sucesso.",
+                "progress": 100,
+            })
 
             logger.info(
                 "Document %s indexed successfully (%d chunks)", document_id, len(chunks)
@@ -197,6 +249,11 @@ async def process_document(
                     )
                 )
                 await db.commit()
+                await _safe_publish(document_id, {
+                    "step": "error",
+                    "detail": "Erro durante a indexação.",
+                    "progress": 100,
+                })
             except Exception:
                 logger.exception(
                     "Failed to persist error status for document %s", document_id
