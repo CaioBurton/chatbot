@@ -20,9 +20,17 @@ class ChatSessionResponse(BaseModel):
     session_id: UUID
 
 
+class ChatSessionSummary(BaseModel):
+    session_id: UUID
+    created_at: str
+    last_activity: str
+    preview: Optional[str] = Field(None, max_length=80)
+
+
 class ChatMessageResponse(BaseModel):
     id: UUID
     role: Literal["user", "assistant"]
+    content: str
     sources: Optional[list[SourceCitation]] = None
     created_at: str
 

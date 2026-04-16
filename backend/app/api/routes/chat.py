@@ -1,7 +1,10 @@
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+# Maximum number of session IDs accepted in a single /sessions request.
+_MAX_SESSION_IDS = 100
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
@@ -12,7 +15,7 @@ from app.core.config import get_settings
 from app.core.rag_engine import rag_stream
 from app.db.postgres import get_db
 from app.models.chat import ChatMessage, ChatSession
-from app.schemas.chat import ChatMessageResponse, ChatRequest, ChatSessionResponse, SourceCitation
+from app.schemas.chat import ChatMessageResponse, ChatRequest, ChatSessionResponse, ChatSessionSummary, SourceCitation
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -145,13 +148,74 @@ async def get_session_history(
             except Exception:
                 sources = None
 
+        if msg.sources and sources is None:
+            logger.warning("Malformed sources on message %s — dropped.", msg.id)
+
         response.append(
             ChatMessageResponse(
                 id=msg.id,
                 role=msg.role,
+                content=msg.content,
                 sources=sources,
                 created_at=msg.created_at.isoformat() if msg.created_at else "",
             )
         )
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# GET /chat/sessions — fetch summaries for a list of known session IDs
+# ---------------------------------------------------------------------------
+
+@router.get("/sessions", response_model=list[ChatSessionSummary])
+async def list_sessions(
+    session_ids: list[UUID] = Query(default=[]),
+    db: AsyncSession = Depends(get_db),
+) -> list[ChatSessionSummary]:
+    """
+    Return summary metadata for the given session IDs.
+    Sessions that do not exist are silently omitted.
+    Used by the frontend sidebar to display known sessions from localStorage.
+    """
+    if not session_ids:
+        return []
+
+    if len(session_ids) > _MAX_SESSION_IDS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"At most {_MAX_SESSION_IDS} session IDs allowed per request.",
+        )
+
+    # Correlated subquery — single round-trip to the database (no N+1).
+    preview_subq = (
+        select(ChatMessage.content)
+        .where(
+            ChatMessage.session_id == ChatSession.id,
+            ChatMessage.role == "user",
+        )
+        .order_by(ChatMessage.created_at.asc())
+        .limit(1)
+        .correlate(ChatSession)
+        .scalar_subquery()
+    )
+
+    result = await db.execute(
+        select(ChatSession, preview_subq.label("preview"))
+        .where(ChatSession.id.in_(session_ids))
+    )
+    rows = result.all()
+
+    summaries: list[ChatSessionSummary] = []
+    for session, first_content in rows:
+        preview = first_content[:80] if first_content else None
+        summaries.append(
+            ChatSessionSummary(
+                session_id=session.id,
+                created_at=session.created_at.isoformat() if session.created_at else "",
+                last_activity=session.last_activity.isoformat() if session.last_activity else "",
+                preview=preview,
+            )
+        )
+
+    return summaries
