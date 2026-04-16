@@ -1,0 +1,188 @@
+# PROPESQI RAG Chatbot — Base Docker Compose
+# Usage (CPU):  docker compose up -d
+# Usage (GPU):  docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 — relational metadata, sessions, users
+  # NOT published to host; reachable internally as postgres:5432
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: propesqi_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Passed to init/00_roles.sh which creates the limited-privilege app role
+      PROPESQI_APP_PASSWORD: ${PROPESQI_APP_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - propesqi-net
+    healthcheck:
+      # Uses container-env vars ($$VAR) to avoid leaking credentials into
+      # compose parse-time substitution while still being dynamic.
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -q",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Qdrant — vector database with BM25 + Dense hybrid search
+  # Sparse vector support is native in Qdrant 1.7+; no server-side flag needed.
+  # Collections are created with sparse_vectors config in application code.
+  # Ports 6333 (REST) and 6334 (gRPC) are internal only.
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: propesqi_qdrant
+    environment:
+      # Keep sparse index hot in memory for latency (change to true if RAM is scarce)
+      QDRANT__STORAGE__SPARSE_VECTORS_ON_DISK: "false"
+      # Disable telemetry in on-premise deployment
+      QDRANT__TELEMETRY_DISABLED: "true"
+      # API key authentication — prevents unauthorized access from other containers
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - propesqi-net
+    healthcheck:
+      # The Qdrant image has bash but not wget/curl.
+      # bash /dev/tcp opens a TCP connection to port 6333; exits 1 if refused.
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && exec 3>&-' 2>/dev/null",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Ollama — local LLM + embedding server
+  # Base compose: CPU-only.  GPU override: docker-compose.gpu.yml
+  # Port 11434 is internal only.
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    container_name: propesqi_ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - propesqi-net
+    healthcheck:
+      # Ollama image has no curl/wget; use bash /dev/tcp to probe port 11434
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/11434 && exec 3>&-' 2>/dev/null",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Backend — FastAPI + RAG pipeline
+  # Waits for all three infrastructure services to be healthy before starting.
+  # Port 8000 is internal only; frontend proxies requests via internal network.
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: propesqi_backend
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      QDRANT_URL: ${QDRANT_URL}
+      DATABASE_URL: ${DATABASE_URL}
+      SECRET_KEY: ${SECRET_KEY}
+      ALGORITHM: ${ALGORITHM}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      # Must match QDRANT__SERVICE__API_KEY set on the qdrant service
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      # Persistent storage for uploaded documents — survives container restarts
+      - uploads_data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - propesqi-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--silent",
+          "--fail",
+          "http://localhost:8000/health",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Frontend — React + Vite
+  # The ONLY service with a published host port.
+  # All admin/auth enforcement is done by the FastAPI JWT middleware in backend.
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: propesqi_frontend
+    ports:
+      # 3000 is the only port reachable from the host network
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - propesqi-net
+    restart: unless-stopped
+
+  # Unreachable placeholder — nginx inside frontend proxies /api/ to backend:8000
+  # so the browser never needs to reach port 8000 directly.
+
+# =============================================================================
+# Named volumes — data persists across container restarts / rebuilds
+# =============================================================================
+volumes:
+  postgres_data:
+  qdrant_data:
+  ollama_data:
+  # Stores raw uploaded files — persists across backend rebuilds/restarts
+  uploads_data:
+
+# =============================================================================
+# Internal bridge network — all inter-service traffic stays inside Docker
+# =============================================================================
+networks:
+  propesqi-net:
+    driver: bridge

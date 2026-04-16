@@ -1,0 +1,36 @@
+# PROPESQI RAG Chatbot — GPU Override for NVIDIA RTX 5060 Ti 16 GB VRAM
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Prerequisites on host:
+#   - nvidia-container-toolkit installed and configured
+#   - Docker daemon configured with "default-runtime": "nvidia"
+#     (or pass --gpus=all via the deploy block below)
+#
+# This file ONLY overrides the `ollama` service.  All other services remain
+# as defined in docker-compose.yml.
+
+services:
+
+  ollama:
+    # Attach the NVIDIA GPU to the container using the Docker Compose
+    # deploy.resources.reservations.devices syntax (docker compose v2+).
+    # This replaces the CPU-only defaults from the base compose file.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Make the GPU visible to CUDA inside the container
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Keep only one model loaded in VRAM at a time.
+      # gemma3:12b-q8_0 uses ~13 GB; a second model would cause OOM on 16 GB VRAM.
+      - OLLAMA_MAX_LOADED_MODELS=1
+      # Serialise inference requests so concurrent calls don't thrash the GPU.
+      # Raise to 2 only if VRAM headroom allows (e.g., after switching to a Q4 model).
+      - OLLAMA_NUM_PARALLEL=1

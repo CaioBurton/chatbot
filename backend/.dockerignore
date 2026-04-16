@@ -1,0 +1,58 @@
+# =============================================================================
+# backend/.dockerignore
+# Files excluded from the Docker build context.
+# Prevents .env files and dev artifacts from leaking into the image.
+# =============================================================================
+
+# Version control
+.git
+.gitignore
+
+# Environment files — NEVER include real secrets in the image
+.env
+.env.*
+!.env.example
+
+# Python cache and compiled bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+env/
+venv/
+.venv/
+ENV/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Uploaded documents — mounted as a Docker volume at runtime
+uploads/
+
+# IDE / editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Alembic migration cache
+alembic/versions/__pycache__/
+
+# macOS metadata
+.DS_Store

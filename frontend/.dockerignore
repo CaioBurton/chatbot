@@ -1,0 +1,42 @@
+# =============================================================================
+# frontend/.dockerignore
+# Files excluded from the Docker build context.
+# Prevents secrets and dev artifacts from leaking into the image.
+# =============================================================================
+
+# Version control
+.git
+.gitignore
+
+# Environment files — NEVER include real secrets in the image
+.env
+.env.*
+!.env.example
+
+# Installed dependencies — npm ci re-installs these in the builder stage
+node_modules/
+
+# Previous build output — the builder stage produces a fresh one
+dist/
+
+# Vite dev cache
+.vite/
+
+# Test and coverage artifacts
+coverage/
+
+# Logs
+*.log
+logs/
+
+# IDE / editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS metadata
+.DS_Store
+
+# nginx config is COPY'd explicitly in the Dockerfile; exclude from wildcard
+# nginx.conf is intentionally included — listed here only for documentation
