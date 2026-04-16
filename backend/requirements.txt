@@ -19,3 +19,4 @@ pytesseract>=0.3.10,<1.0
 opencv-python-headless>=4.9,<5.0
 pdf2image>=1.17,<2.0
 sentence-transformers>=3.0,<4.0
+sse-starlette>=1.6,<2.0
