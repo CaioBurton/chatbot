@@ -22,9 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
         # pdf2image depends on Poppler utilities (pdftoppm, pdfinfo)
         poppler-utils \
-        # unoconv: Python bridge to LibreOffice for ODT/DOC conversion
-        # libreoffice-writer provides the headless conversion backend
-        unoconv \
+        # libreoffice-writer: headless ODT/DOC conversion backend (Phase 2)
+        # unoconv is installed via pip (not available in Debian bookworm apt repos)
         libreoffice-writer \
         # curl is needed for the Docker Compose healthcheck on /health
         curl \
@@ -47,6 +46,12 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 # ---- Application source --------------------------------------------------- #
 COPY --chown=appuser:appuser . .
+
+# ---- Upload directory ----------------------------------------------------- #
+# Create the uploads directory with correct ownership before switching users.
+# The Docker Compose volume is mounted here at runtime; the directory must
+# exist and be writable by appuser so the app can persist uploaded files.
+RUN mkdir -p /app/uploads && chown appuser:appuser /app/uploads
 
 # ---- Runtime user --------------------------------------------------------- #
 USER appuser

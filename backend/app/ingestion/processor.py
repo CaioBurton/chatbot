@@ -1,0 +1,185 @@
+import logging
+import uuid
+from typing import Any
+
+import httpx
+from qdrant_client.models import PointStruct
+from sqlalchemy import text, update
+
+from app.core.config import get_settings
+from app.db.postgres import AsyncSessionLocal
+from app.db.qdrant import COLLECTION_NAME, get_qdrant_client
+from app.ingestion.chunker import chunk_pages
+from app.ingestion.extractors.ocr import extract_pdf_ocr
+from app.ingestion.extractors.pdf import extract_pdf
+from app.models.document import Document
+
+logger = logging.getLogger(__name__)
+settings = get_settings()
+
+_EMBED_BATCH_SIZE = 32
+_QDRANT_BATCH_SIZE = 100
+
+
+async def _embed_batch(
+    client: httpx.AsyncClient, texts: list[str]
+) -> list[list[float]]:
+    """
+    Call Ollama /api/embed (batch endpoint) for a list of texts.
+    Returns a list of dense float vectors, one per input text.
+    """
+    response = await client.post(
+        f"{settings.OLLAMA_BASE_URL}/api/embed",
+        json={"model": "bge-m3", "input": texts},
+        timeout=300.0,
+    )
+    response.raise_for_status()
+    return response.json()["embeddings"]
+
+
+async def process_document(
+    document_id: str,
+    file_path: str,
+    original_name: str,
+) -> None:
+    """
+    Background ingestion pipeline for a single PDF document.
+
+    Status transitions:
+        uploaded → processing → active  (success — native and scanned PDFs)
+        uploaded → processing → error   (any exception, or empty document)
+
+    This function must never raise — a crash here would silently kill the
+    background task without updating the document status.
+    """
+    doc_uuid = uuid.UUID(document_id)
+
+    async with AsyncSessionLocal() as db:
+        try:
+            # ------------------------------------------------------------------ #
+            # 1. Mark as processing
+            # ------------------------------------------------------------------ #
+            await db.execute(
+                update(Document)
+                .where(Document.id == doc_uuid)
+                .values(status="processing")
+            )
+            await db.commit()
+
+            # ------------------------------------------------------------------ #
+            # 2. Extract text from PDF
+            # ------------------------------------------------------------------ #
+            pages, is_scanned = await extract_pdf(file_path)
+
+            if is_scanned:
+                pages = await extract_pdf_ocr(file_path)
+
+            # ------------------------------------------------------------------ #
+            # 3. Chunk the extracted text
+            # ------------------------------------------------------------------ #
+            chunks: list[dict[str, Any]] = await chunk_pages(
+                pages, document_id, original_name
+            )
+
+            if not chunks:
+                await db.execute(
+                    update(Document)
+                    .where(Document.id == doc_uuid)
+                    .values(
+                        status="error",
+                        error_message="No text content could be extracted from PDF",
+                    )
+                )
+                await db.commit()
+                return
+
+            # ------------------------------------------------------------------ #
+            # 4. Embed via Ollama (batched)
+            # ------------------------------------------------------------------ #
+            texts = [c["text"] for c in chunks]
+            embeddings: list[list[float]] = []
+
+            async with httpx.AsyncClient() as http_client:
+                for i in range(0, len(texts), _EMBED_BATCH_SIZE):
+                    batch = texts[i : i + _EMBED_BATCH_SIZE]
+                    batch_embeddings = await _embed_batch(http_client, batch)
+                    embeddings.extend(batch_embeddings)
+
+            # ------------------------------------------------------------------ #
+            # 5. Upsert points to Qdrant (batched)
+            # ------------------------------------------------------------------ #
+            qdrant = get_qdrant_client()
+            points = [
+                PointStruct(
+                    id=chunk["id"],
+                    vector=embeddings[idx],
+                    payload=chunk["metadata"],
+                )
+                for idx, chunk in enumerate(chunks)
+            ]
+
+            for i in range(0, len(points), _QDRANT_BATCH_SIZE):
+                await qdrant.upsert(
+                    collection_name=COLLECTION_NAME,
+                    points=points[i : i + _QDRANT_BATCH_SIZE],
+                )
+
+            # ------------------------------------------------------------------ #
+            # 6. Mirror chunks to PostgreSQL (single executemany round-trip)
+            # ------------------------------------------------------------------ #
+            chunk_params = [
+                {
+                    "document_id": doc_uuid,
+                    "qdrant_id": uuid.UUID(chunk["id"]),
+                    "page_number": chunk["metadata"]["page_number"],
+                    "chunk_index": chunk["metadata"]["chunk_index"],
+                    "text_preview": chunk["text"][:200],
+                }
+                for chunk in chunks
+            ]
+            await db.execute(
+                text(
+                    "INSERT INTO chunks "
+                    "(document_id, qdrant_id, page_number, chunk_index, text_preview) "
+                    "VALUES (:document_id, :qdrant_id, :page_number, :chunk_index, :text_preview)"
+                ),
+                chunk_params,
+            )
+
+            # ------------------------------------------------------------------ #
+            # 7. Mark document as active
+            # ------------------------------------------------------------------ #
+            active_values: dict[str, Any] = {"status": "active", "total_chunks": len(chunks)}
+            if is_scanned:
+                active_values["file_type"] = "pdf_scanned"
+            await db.execute(
+                update(Document)
+                .where(Document.id == doc_uuid)
+                .values(**active_values)
+            )
+            await db.commit()
+
+            logger.info(
+                "Document %s indexed successfully (%d chunks)", document_id, len(chunks)
+            )
+
+        except Exception as exc:
+            logger.exception(
+                "Background ingestion failed for document %s", document_id
+            )
+            try:
+                await db.rollback()
+                await db.execute(
+                    update(Document)
+                    .where(Document.id == doc_uuid)
+                    .values(
+                        status="error",
+                        error_message=str(exc)[:500],  # cap length; avoid storing huge traces
+                        retry_count=Document.retry_count + 1,
+                    )
+                )
+                await db.commit()
+            except Exception:
+                logger.exception(
+                    "Failed to persist error status for document %s", document_id
+                )

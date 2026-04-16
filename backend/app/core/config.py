@@ -1,0 +1,47 @@
+from functools import lru_cache
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    # Database
+    DATABASE_URL: str
+
+    # Qdrant
+    QDRANT_URL: str
+    QDRANT_API_KEY: str
+
+    # Ollama
+    OLLAMA_BASE_URL: str
+
+    # JWT — no default for SECRET_KEY; must be supplied via env
+    SECRET_KEY: str
+    ALGORITHM: str = "HS256"
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def _validate_secret_key(cls, v: str) -> str:
+        if len(v) < 32:
+            raise ValueError(
+                "SECRET_KEY must be at least 32 characters. "
+                "Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        return v
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # CORS — stored as comma-separated string in env; split at use-time to avoid
+    # pydantic-settings attempting JSON-parse on a plain string value.
+    ALLOWED_ORIGINS: str = "http://localhost:3000"
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def allowed_origins_list(self) -> list[str]:
+        """Return ALLOWED_ORIGINS as a list split on commas."""
+        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
