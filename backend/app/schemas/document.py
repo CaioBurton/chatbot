@@ -23,6 +23,21 @@ class DocumentListItem(BaseModel):
     created_at: datetime
 
 
+class DocumentDetail(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    original_name: str
+    status: str
+    file_type: str
+    ocr_applied: bool
+    total_chunks: int | None
+    error_message: str | None
+    retry_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str

@@ -4,15 +4,17 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, UploadFile, status
+from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_admin
 from app.db.postgres import get_db
+from app.db.qdrant import COLLECTION_NAME, get_qdrant_client
 from app.ingestion.processor import process_document
 from app.models.document import Document
-from app.schemas.document import DocumentListItem, DocumentUploadResponse
+from app.schemas.document import DocumentDetail, DocumentListItem, DocumentUploadResponse
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -153,3 +155,148 @@ async def list_documents(
     )
     docs = result.scalars().all()
     return [DocumentListItem.model_validate(doc) for doc in docs]
+
+
+# ------------------------------------------------------------------ #
+# GET /documents/{doc_id}                                              #
+# Purpose : Return full metadata for a single document.               #
+# Auth    : require_admin (JWT, role admin or superadmin)              #
+# Status  : 200 OK | 404 Not Found                                    #
+# ------------------------------------------------------------------ #
+@router.get("/{doc_id}", response_model=DocumentDetail)
+async def get_document(
+    doc_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_admin),
+) -> DocumentDetail:
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return DocumentDetail.model_validate(doc)
+
+
+# ------------------------------------------------------------------ #
+# DELETE /documents/{doc_id}                                          #
+# Purpose : Remove a document from PostgreSQL, Qdrant, and disk.      #
+# Auth    : require_admin (JWT, role admin or superadmin)              #
+# Status  : 204 No Content | 404 Not Found                            #
+# ------------------------------------------------------------------ #
+@router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    doc_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_admin),
+) -> Response:
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # ------------------------------------------------------------------ #
+    # 1. Delete the database record first (authoritative).               #
+    #    Committing here keeps the DB as the source of truth: if Qdrant  #
+    #    or file cleanup fail afterwards the document is already gone    #
+    #    from the user's view; orphaned data becomes a maintenance task, #
+    #    not a user-facing inconsistency.                                #
+    # ------------------------------------------------------------------ #
+    filename = doc.filename  # capture before session expiry
+    await db.delete(doc)
+    await db.commit()
+
+    # ------------------------------------------------------------------ #
+    # 2. Delete Qdrant points by payload filter so orphaned points are   #
+    #    also cleaned up even if their UUID was regenerated.             #
+    # ------------------------------------------------------------------ #
+    qdrant = get_qdrant_client()
+    await qdrant.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=FilterSelector(
+            filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="doc_id",
+                        match=MatchValue(value=str(doc_id)),
+                    )
+                ]
+            )
+        ),
+    )
+
+    # ------------------------------------------------------------------ #
+    # 3. Delete physical file (missing file is not fatal)                #
+    # ------------------------------------------------------------------ #
+    (_UPLOAD_DIR / filename).unlink(missing_ok=True)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ------------------------------------------------------------------ #
+# POST /documents/{doc_id}/reindex                                    #
+# Purpose : Re-trigger ingestion for a document in error/uploaded     #
+#           state. Resets status and schedules background processing. #
+# Auth    : require_admin (JWT, role admin or superadmin)             #
+# Status  : 202 Accepted | 404 Not Found | 409 Conflict               #
+# ------------------------------------------------------------------ #
+@router.post(
+    "/{doc_id}/reindex",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=DocumentUploadResponse,
+)
+async def reindex_document(
+    doc_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_admin),
+) -> DocumentUploadResponse:
+    # .with_for_update() acquires a row-level lock so concurrent reindex
+    # requests on the same document cannot both pass the status guard and
+    # schedule duplicate background tasks.
+    result = await db.execute(
+        select(Document).where(Document.id == doc_id).with_for_update()
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # ------------------------------------------------------------------ #
+    # 1. Only allow reindex when the document is in a retriable state    #
+    # ------------------------------------------------------------------ #
+    if doc.status not in ("error", "uploaded"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document is already active or processing; reindex not permitted",
+        )
+
+    # ------------------------------------------------------------------ #
+    # 2. Verify the physical file still exists on disk                   #
+    # ------------------------------------------------------------------ #
+    file_path = _UPLOAD_DIR / doc.filename
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source file no longer exists on disk; upload the document again",
+        )
+
+    # ------------------------------------------------------------------ #
+    # 3. Reset document state and persist                                #
+    # ------------------------------------------------------------------ #
+    doc.status = "uploaded"
+    doc.error_message = None
+    await db.commit()
+
+    # ------------------------------------------------------------------ #
+    # 4. Schedule background re-ingestion                                #
+    # ------------------------------------------------------------------ #
+    background_tasks.add_task(
+        process_document,
+        str(doc.id),
+        str(file_path),
+        doc.original_name,
+    )
+
+    return DocumentUploadResponse(
+        id=doc.id,
+        status=doc.status,
+        original_name=doc.original_name,
+    )
