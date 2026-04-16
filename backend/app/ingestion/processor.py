@@ -1,3 +1,9 @@
+# ingestion/processor.py
+# Changed: PointStruct now uses named vectors {"dense": ..., "sparse": ...} to match
+# the updated Qdrant collection config. sparse vectors come from app.ingestion.sparse
+# (BM42 via fastembed). text_preview added to Qdrant payload so hybrid search results
+# can surface it without a secondary PostgreSQL lookup.
+
 import logging
 import uuid
 from typing import Any
@@ -8,10 +14,11 @@ from sqlalchemy import text, update
 
 from app.core.config import get_settings
 from app.db.postgres import AsyncSessionLocal
-from app.db.qdrant import COLLECTION_NAME, get_qdrant_client
+from app.db.qdrant import COLLECTION_NAME, DENSE_VECTOR_NAME, SPARSE_VECTOR_NAME, get_qdrant_client
 from app.ingestion.chunker import chunk_pages
 from app.ingestion.extractors.ocr import extract_pdf_ocr
 from app.ingestion.extractors.pdf import extract_pdf
+from app.ingestion.sparse import encode_sparse
 from app.models.document import Document
 
 logger = logging.getLogger(__name__)
@@ -105,6 +112,14 @@ async def process_document(
                     batch_embeddings = await _embed_batch(http_client, batch)
                     embeddings.extend(batch_embeddings)
 
+            sparse_vectors = await encode_sparse(texts)
+
+            if len(sparse_vectors) != len(texts):
+                raise RuntimeError(
+                    f"Sparse encoder returned {len(sparse_vectors)} vectors "
+                    f"for {len(texts)} texts; aborting to prevent vector mismatch"
+                )
+
             # ------------------------------------------------------------------ #
             # 5. Upsert points to Qdrant (batched)
             # ------------------------------------------------------------------ #
@@ -112,8 +127,11 @@ async def process_document(
             points = [
                 PointStruct(
                     id=chunk["id"],
-                    vector=embeddings[idx],
-                    payload=chunk["metadata"],
+                    vector={
+                        DENSE_VECTOR_NAME: embeddings[idx],
+                        SPARSE_VECTOR_NAME: sparse_vectors[idx],
+                    },
+                    payload={**chunk["metadata"], "text_preview": chunk["text"][:200]},
                 )
                 for idx, chunk in enumerate(chunks)
             ]

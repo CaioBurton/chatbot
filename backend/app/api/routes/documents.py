@@ -12,9 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import require_admin
 from app.db.postgres import get_db
 from app.db.qdrant import COLLECTION_NAME, get_qdrant_client
+from app.db.search import hybrid_search
 from app.ingestion.processor import process_document
 from app.models.document import Document
-from app.schemas.document import DocumentDetail, DocumentListItem, DocumentUploadResponse
+from app.schemas.document import (
+    DocumentDetail,
+    DocumentListItem,
+    DocumentUploadResponse,
+    HybridSearchRequest,
+    SearchResultItem,
+)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -300,3 +307,35 @@ async def reindex_document(
         status=doc.status,
         original_name=doc.original_name,
     )
+
+
+# ------------------------------------------------------------------ #
+# POST /documents/search                                              #
+# Purpose : Hybrid dense+sparse search with RRF fusion (Top-K=20).   #
+# Auth    : require_admin (JWT, role admin or superadmin)             #
+# Status  : 200 OK                                                    #
+# Note    : All input validation is enforced by Pydantic before this  #
+#           handler runs, regardless of the frontend.                 #
+# ------------------------------------------------------------------ #
+@router.post("/search", response_model=list[SearchResultItem])
+async def search_documents(
+    body: HybridSearchRequest,
+    _user=Depends(require_admin),
+) -> list[SearchResultItem]:
+    points = await hybrid_search(
+        query=body.query,
+        top_k=body.top_k,
+        score_threshold=body.score_threshold,
+    )
+    return [
+        SearchResultItem(
+            chunk_id=str(point.id),
+            score=point.score,
+            doc_id=point.payload.get("doc_id", ""),
+            source=point.payload.get("source", ""),
+            page_number=point.payload.get("page_number", 0),
+            text_preview=point.payload.get("text_preview", ""),
+            chunk_index=point.payload.get("chunk_index", 0),
+        )
+        for point in points
+    ]
