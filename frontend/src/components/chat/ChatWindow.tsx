@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
 import { DisplayMessage } from '../../hooks/useChat'
-import { Theme } from '../../hooks/useTheme'
 import MessageBubble from './MessageBubble'
 import ChatInput from './ChatInput'
 
@@ -9,55 +8,29 @@ interface Props {
   streaming: boolean
   onSend: (text: string) => void
   onStop: () => void
-  theme: Theme
 }
 
-export default function ChatWindow({ messages, streaming, onSend, onStop, theme }: Props) {
+export default function ChatWindow({ messages, streaming, onSend, onStop }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
-  const isDark = theme === 'dark'
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
   return (
-    <div
-      style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        minWidth: 0,
-        backgroundColor: isDark ? '#1e1e1e' : '#fff',
-      }}
-    >
-      <div
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '1rem',
-          display: 'flex',
-          flexDirection: 'column',
-        }}
-      >
+    <div className="flex-1 flex flex-col min-w-0 bg-white dark:bg-[#1e1e1e]">
+      <div className="flex-1 overflow-y-auto p-4 flex flex-col">
         {messages.length === 0 && (
-          <div
-            style={{
-              margin: 'auto',
-              textAlign: 'center',
-              opacity: 0.45,
-              fontSize: '0.95rem',
-              color: isDark ? '#e8e8e8' : '#111',
-            }}
-          >
+          <div className="m-auto text-center opacity-[0.45] text-[0.95rem] text-[#111] dark:text-[#e8e8e8]">
             <p>Envie uma mensagem para começar.</p>
           </div>
         )}
         {messages.map(m => (
-          <MessageBubble key={m.id} message={m} theme={theme} />
+          <MessageBubble key={m.id} message={m} />
         ))}
         <div ref={bottomRef} />
       </div>
-      <ChatInput onSend={onSend} disabled={streaming} onStop={onStop} theme={theme} />
+      <ChatInput onSend={onSend} disabled={streaming} onStop={onStop} />
     </div>
   )
 }

@@ -1,16 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
-import type { CSSProperties } from 'react'
 import { DisplayMessage } from '../../hooks/useChat'
-import { Theme } from '../../hooks/useTheme'
 import { submitFeedback } from '../../lib/api'
 
 interface Props {
   message: DisplayMessage
-  theme: Theme
   onFeedback?: (id: string, value: 'up' | 'down') => void
 }
 
-export default function MessageBubble({ message, theme, onFeedback }: Props) {
+export default function MessageBubble({ message, onFeedback }: Props) {
   const [copied, setCopied] = useState(false)
   const [feedbackValue, setFeedbackValue] = useState<'up' | 'down' | null>(null)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -22,13 +19,11 @@ export default function MessageBubble({ message, theme, onFeedback }: Props) {
   }, [])
 
   const isUser = message.role === 'user'
-  const isDark = theme === 'dark'
   const hasContent = message.content.length > 0
 
-  const bubbleBg = isUser
-    ? isDark ? '#1a6db5' : '#0078d4'
-    : isDark ? '#3a3a3a' : '#f0f0f0'
-  const bubbleColor = isUser ? '#fff' : isDark ? '#e8e8e8' : '#111'
+  const bubbleClasses = isUser
+    ? 'bg-[#0078d4] dark:bg-[#1a6db5] text-white'
+    : 'bg-[#f0f0f0] dark:bg-[#3a3a3a] text-[#111] dark:text-[#e8e8e8]'
 
   const handleCopy = () => {
     if (!navigator.clipboard) return
@@ -46,71 +41,38 @@ export default function MessageBubble({ message, theme, onFeedback }: Props) {
     onFeedback?.(message.id, value)
   }
 
-  const ghostBtnBase: CSSProperties = {
-    border: 'none',
-    background: 'transparent',
-    fontFamily: 'inherit',
-    cursor: 'pointer',
-    color: bubbleColor,
-    padding: '0.1rem 0.3rem',
-    borderRadius: '0.25rem',
-  }
-
   return (
-    <div
-      style={{
-        display: 'flex',
-        justifyContent: isUser ? 'flex-end' : 'flex-start',
-        marginBottom: '0.75rem',
-      }}
-    >
+    <div className={`flex mb-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        style={{
-          maxWidth: '70%',
-          padding: '0.75rem 1rem',
-          borderRadius: isUser ? '1rem 1rem 0 1rem' : '1rem 1rem 1rem 0',
-          backgroundColor: bubbleBg,
-          color: bubbleColor,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          lineHeight: 1.5,
-        }}
+        className={`max-w-[70%] py-3 px-4 ${isUser ? 'rounded-[1rem_1rem_0_1rem]' : 'rounded-[1rem_1rem_1rem_0]'} ${bubbleClasses} whitespace-pre-wrap break-words leading-[1.5]`}
       >
         {message.content || (
-          <span style={{ opacity: 0.4, fontStyle: 'italic' }}>▌</span>
+          <span className="opacity-40 italic">▌</span>
         )}
 
         {!isUser && hasContent && (
-          <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.4rem' }}>
+          <div className="flex gap-[0.3rem] mt-[0.4rem]">
             <button
+              type="button"
               onClick={() => handleFeedback('up')}
               disabled={feedbackValue !== null}
               title="Resposta útil"
+              className={`border-0 font-[inherit] p-[0.1rem_0.3rem] rounded text-[0.85rem] text-[#111] dark:text-[#e8e8e8] ${feedbackValue === 'up' ? 'bg-[#d4edda] dark:bg-[#2d6a2d]' : 'bg-transparent'}`}
               style={{
-                ...ghostBtnBase,
-                fontSize: '0.85rem',
                 opacity: feedbackValue !== null && feedbackValue !== 'up' ? 0.35 : 1,
-                backgroundColor:
-                  feedbackValue === 'up'
-                    ? isDark ? '#2d6a2d' : '#d4edda'
-                    : 'transparent',
                 cursor: feedbackValue !== null ? 'default' : 'pointer',
               }}
             >
               👍
             </button>
             <button
+              type="button"
               onClick={() => handleFeedback('down')}
               disabled={feedbackValue !== null}
               title="Resposta não útil"
+              className={`border-0 font-[inherit] p-[0.1rem_0.3rem] rounded text-[0.85rem] text-[#111] dark:text-[#e8e8e8] ${feedbackValue === 'down' ? 'bg-[#f8d7da] dark:bg-[#6a2d2d]' : 'bg-transparent'}`}
               style={{
-                ...ghostBtnBase,
-                fontSize: '0.85rem',
                 opacity: feedbackValue !== null && feedbackValue !== 'down' ? 0.35 : 1,
-                backgroundColor:
-                  feedbackValue === 'down'
-                    ? isDark ? '#6a2d2d' : '#f8d7da'
-                    : 'transparent',
                 cursor: feedbackValue !== null ? 'default' : 'pointer',
               }}
             >
@@ -121,16 +83,10 @@ export default function MessageBubble({ message, theme, onFeedback }: Props) {
 
         {message.sources && message.sources.length > 0 && (
           <div
-            style={{
-              marginTop: '0.6rem',
-              borderTop: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.12)'}`,
-              paddingTop: '0.5rem',
-              fontSize: '0.78rem',
-              color: isUser ? 'rgba(255,255,255,0.85)' : isDark ? '#c0c0c0' : '#444',
-            }}
+            className={`mt-[0.6rem] pt-[0.5rem] text-[0.78rem] border-t border-solid ${isUser ? 'border-white/[0.15] text-white/[0.85]' : 'border-black/[0.12] dark:border-white/[0.15] text-[#444] dark:text-[#c0c0c0]'}`}
           >
             <strong>Fontes:</strong>
-            <ul style={{ margin: '0.25rem 0 0', paddingLeft: '1.2rem' }}>
+            <ul className="mt-1 mb-0 pl-5">
               {message.sources.map((s, i) => (
                 <li key={i}>
                   {s.original_name}
@@ -144,15 +100,11 @@ export default function MessageBubble({ message, theme, onFeedback }: Props) {
         )}
 
         {!isUser && hasContent && (
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.3rem' }}>
+          <div className="flex justify-end mt-[0.3rem]">
             <button
+              type="button"
               onClick={handleCopy}
-              style={{
-                ...ghostBtnBase,
-                fontSize: '0.72rem',
-                opacity: 0.6,
-                color: isDark ? '#c0c0c0' : '#555',
-              }}
+              className="border-0 bg-transparent font-[inherit] cursor-pointer p-[0.1rem_0.3rem] rounded text-[0.72rem] opacity-60 text-[#555] dark:text-[#c0c0c0]"
             >
               {copied ? 'Copiado!' : 'Copiar'}
             </button>

@@ -1,16 +1,13 @@
 import { useState, KeyboardEvent } from 'react'
-import { Theme } from '../../hooks/useTheme'
 
 interface Props {
   onSend: (text: string) => void
   disabled?: boolean
   onStop?: () => void
-  theme: Theme
 }
 
-export default function ChatInput({ onSend, disabled, onStop, theme }: Props) {
+export default function ChatInput({ onSend, disabled, onStop }: Props) {
   const [value, setValue] = useState('')
-  const isDark = theme === 'dark'
 
   const handleSend = () => {
     const text = value.trim()
@@ -26,22 +23,8 @@ export default function ChatInput({ onSend, disabled, onStop, theme }: Props) {
     }
   }
 
-  const containerBg = isDark ? '#2d2d2d' : '#fff'
-  const containerBorder = isDark ? '#444' : '#ddd'
-  const inputBorder = isDark ? '#555' : '#ccc'
-  const inputBg = isDark ? '#3a3a3a' : '#fff'
-  const inputColor = isDark ? '#e8e8e8' : '#111'
-
   return (
-    <div
-      style={{
-        display: 'flex',
-        gap: '0.5rem',
-        padding: '0.75rem 1rem',
-        borderTop: `1px solid ${containerBorder}`,
-        backgroundColor: containerBg,
-      }}
-    >
+    <div className="flex gap-2 px-4 py-3 border-t border-[#ddd] dark:border-[#444] bg-white dark:bg-[#2d2d2d]">
       <textarea
         value={value}
         onChange={e => setValue(e.target.value)}
@@ -49,56 +32,22 @@ export default function ChatInput({ onSend, disabled, onStop, theme }: Props) {
         disabled={disabled}
         placeholder="Digite sua mensagem… (Enter envia, Shift+Enter nova linha)"
         rows={1}
-        style={{
-          flex: 1,
-          resize: 'none',
-          padding: '0.5rem 0.75rem',
-          borderRadius: '0.5rem',
-          border: `1px solid ${inputBorder}`,
-          fontFamily: 'inherit',
-          fontSize: '0.9rem',
-          minHeight: '2.5rem',
-          maxHeight: '8rem',
-          overflowY: 'auto',
-          lineHeight: 1.5,
-          backgroundColor: inputBg,
-          color: inputColor,
-        }}
+        className="flex-1 resize-none py-2 px-3 rounded-lg border border-[#ccc] dark:border-[#555] text-[0.9rem] min-h-10 max-h-32 overflow-y-auto leading-[1.5] bg-white dark:bg-[#3a3a3a] text-[#111] dark:text-[#e8e8e8]"
       />
       {disabled ? (
         <button
+          type="button"
           onClick={onStop}
-          style={{
-            padding: '0.5rem 1.25rem',
-            borderRadius: '0.5rem',
-            border: 'none',
-            backgroundColor: '#c0392b',
-            color: '#fff',
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-            fontSize: '0.9rem',
-            alignSelf: 'flex-end',
-            flexShrink: 0,
-          }}
+          className="py-2 px-5 rounded-lg border-0 bg-[#c0392b] text-white cursor-pointer text-[0.9rem] self-end shrink-0"
         >
           ⏹ Parar
         </button>
       ) : (
         <button
+          type="button"
           onClick={handleSend}
           disabled={!value.trim()}
-          style={{
-            padding: '0.5rem 1.25rem',
-            borderRadius: '0.5rem',
-            border: 'none',
-            backgroundColor: !value.trim() ? '#aaa' : '#0078d4',
-            color: '#fff',
-            cursor: !value.trim() ? 'not-allowed' : 'pointer',
-            fontFamily: 'inherit',
-            fontSize: '0.9rem',
-            alignSelf: 'flex-end',
-            flexShrink: 0,
-          }}
+          className="py-2 px-5 rounded-lg border-0 bg-[#0078d4] disabled:bg-[#aaa] text-white cursor-pointer disabled:cursor-not-allowed text-[0.9rem] self-end shrink-0"
         >
           Enviar
         </button>

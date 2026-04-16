@@ -1,7 +1,6 @@
 import { useState } from 'react'
-import type { CSSProperties } from 'react'
 import { SessionSummary } from '../../lib/api'
-import { Theme } from '../../hooks/useTheme'
+import { useTheme } from '../../hooks/useTheme'
 
 const COLLAPSE_KEY = 'propesqi_sidebar_collapsed'
 
@@ -10,12 +9,14 @@ interface Props {
   currentSessionId: string | null
   onNewSession: () => void
   onSelectSession: (id: string) => void
-  theme: Theme
-  toggleTheme: () => void
 }
 
 function loadCollapsed(): boolean {
-  return localStorage.getItem(COLLAPSE_KEY) === 'true'
+  try {
+    return localStorage.getItem(COLLAPSE_KEY) === 'true'
+  } catch {
+    return false
+  }
 }
 
 function formatDate(iso: string): string {
@@ -38,86 +39,41 @@ export default function Sidebar({
   currentSessionId,
   onNewSession,
   onSelectSession,
-  theme,
-  toggleTheme,
 }: Props) {
   const [collapsed, setCollapsed] = useState<boolean>(loadCollapsed)
-
-  const isDark = theme === 'dark'
-  const bg = isDark ? '#2d2d2d' : '#fafafa'
-  const border = isDark ? '#444' : '#ddd'
-  const text = isDark ? '#e8e8e8' : '#111'
+  const { theme, toggleTheme } = useTheme()
 
   const toggleCollapsed = () => {
     setCollapsed(prev => {
       const next = !prev
-      localStorage.setItem(COLLAPSE_KEY, String(next))
+      try {
+        localStorage.setItem(COLLAPSE_KEY, String(next))
+      } catch {
+        // Storage unavailable
+      }
       return next
     })
   }
 
-  const iconBtnStyle: CSSProperties = {
-    border: 'none',
-    background: 'transparent',
-    cursor: 'pointer',
-    color: text,
-    fontFamily: 'inherit',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  }
-
   if (collapsed) {
     return (
-      <aside
-        style={{
-          width: '48px',
-          borderRight: `1px solid ${border}`,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          backgroundColor: bg,
-          flexShrink: 0,
-        }}
-      >
-        <div
-          style={{
-            padding: '0.5rem 0',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '0.5rem',
-            width: '100%',
-          }}
-        >
+      <aside className="w-12 border-r border-[#ddd] dark:border-[#444] flex flex-col items-center bg-[#fafafa] dark:bg-[#2d2d2d] shrink-0">
+        <div className="py-2 flex flex-col items-center gap-2 w-full">
           <button
+            type="button"
             onClick={onNewSession}
             title="Nova conversa"
-            style={{
-              ...iconBtnStyle,
-              width: '36px',
-              height: '36px',
-              borderRadius: '0.5rem',
-              border: '1px solid #0078d4',
-              color: '#0078d4',
-              fontSize: '1.2rem',
-            }}
+            className="w-9 h-9 rounded-lg border border-[#0078d4] text-[#0078d4] text-[1.2rem] flex items-center justify-center bg-transparent cursor-pointer"
           >
             +
           </button>
         </div>
-        <div style={{ flex: 1 }} />
+        <div className="flex-1" />
         <button
+          type="button"
           onClick={toggleCollapsed}
           title="Expandir"
-          style={{
-            ...iconBtnStyle,
-            width: '36px',
-            height: '36px',
-            borderRadius: '0.5rem',
-            fontSize: '1rem',
-            marginBottom: '0.75rem',
-          }}
+          className="w-9 h-9 rounded-lg text-base flex items-center justify-center bg-transparent border-0 cursor-pointer text-[#111] dark:text-[#e8e8e8] mb-3"
         >
           ›
         </button>
@@ -126,119 +82,51 @@ export default function Sidebar({
   }
 
   return (
-    <aside
-      style={{
-        width: '260px',
-        minWidth: '200px',
-        maxWidth: '320px',
-        borderRight: `1px solid ${border}`,
-        display: 'flex',
-        flexDirection: 'column',
-        backgroundColor: bg,
-        flexShrink: 0,
-      }}
-    >
-      <div
-        style={{
-          padding: '1rem',
-          borderBottom: `1px solid ${border}`,
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: '0.75rem',
-          }}
-        >
-          <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600, color: text }}>
+    <aside className="w-[260px] min-w-[200px] max-w-[320px] border-r border-[#ddd] dark:border-[#444] flex flex-col bg-[#fafafa] dark:bg-[#2d2d2d] shrink-0">
+      <div className="p-4 border-b border-[#ddd] dark:border-[#444]">
+        <div className="flex justify-between items-center mb-3">
+          <h2 className="m-0 text-base font-semibold text-[#111] dark:text-[#e8e8e8]">
             PROPESQI
           </h2>
           <button
+            type="button"
             onClick={toggleTheme}
-            title={isDark ? 'Modo claro' : 'Modo escuro'}
-            style={{
-              ...iconBtnStyle,
-              fontSize: '1rem',
-              padding: '0.25rem',
-              borderRadius: '0.25rem',
-            }}
+            title={theme === 'dark' ? 'Modo claro' : 'Modo escuro'}
+            className="border-0 bg-transparent cursor-pointer text-[#111] dark:text-[#e8e8e8] text-base p-1 rounded flex items-center justify-center"
           >
-            {isDark ? '☀' : '🌙'}
+            {theme === 'dark' ? '☀' : '🌙'}
           </button>
         </div>
         <button
+          type="button"
           onClick={onNewSession}
-          style={{
-            width: '100%',
-            padding: '0.5rem',
-            borderRadius: '0.5rem',
-            border: '1px solid #0078d4',
-            backgroundColor: 'transparent',
-            color: '#0078d4',
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-            fontSize: '0.9rem',
-          }}
+          className="w-full py-2 rounded-lg border border-[#0078d4] bg-transparent text-[#0078d4] cursor-pointer text-[0.9rem]"
         >
           + Nova conversa
         </button>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '0.5rem' }}>
+      <div className="flex-1 overflow-y-auto p-2">
         {summaries.length === 0 && (
-          <p
-            style={{
-              padding: '0.5rem',
-              opacity: 0.5,
-              fontSize: '0.85rem',
-              margin: 0,
-              color: text,
-            }}
-          >
+          <p className="p-2 opacity-50 text-[0.85rem] m-0 text-[#111] dark:text-[#e8e8e8]">
             Sem conversas anteriores.
           </p>
         )}
         {summaries.map(s => (
           <button
+            type="button"
             key={s.session_id}
             onClick={() => onSelectSession(s.session_id)}
-            style={{
-              display: 'block',
-              width: '100%',
-              textAlign: 'left',
-              padding: '0.6rem 0.75rem',
-              borderRadius: '0.5rem',
-              border: 'none',
-              backgroundColor:
-                s.session_id === currentSessionId
-                  ? isDark ? '#1a4a6e' : '#e3f2fd'
-                  : 'transparent',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              marginBottom: '0.25rem',
-              color: text,
-            }}
+            className={`block w-full text-left px-3 py-[0.6rem] rounded-lg border-0 cursor-pointer mb-1 text-[#111] dark:text-[#e8e8e8] ${
+              s.session_id === currentSessionId
+                ? 'bg-[#e3f2fd] dark:bg-[#1a4a6e]'
+                : 'bg-transparent'
+            }`}
           >
-            <div
-              style={{
-                fontSize: '0.85rem',
-                fontWeight: 500,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
+            <div className="text-[0.85rem] font-medium overflow-hidden text-ellipsis whitespace-nowrap">
               {s.preview ?? '(sem mensagens)'}
             </div>
-            <div
-              style={{
-                fontSize: '0.75rem',
-                opacity: 0.55,
-                marginTop: '0.2rem',
-              }}
-            >
+            <div className="text-[0.75rem] opacity-[0.55] mt-[0.2rem]">
               {formatDate(s.last_activity)}
             </div>
           </button>
@@ -246,19 +134,10 @@ export default function Sidebar({
       </div>
 
       <button
+        type="button"
         onClick={toggleCollapsed}
         title="Recolher"
-        style={{
-          border: 'none',
-          borderTop: `1px solid ${border}`,
-          backgroundColor: 'transparent',
-          cursor: 'pointer',
-          padding: '0.6rem 1rem',
-          color: text,
-          fontSize: '0.9rem',
-          textAlign: 'right',
-          fontFamily: 'inherit',
-        }}
+        className="border-0 border-t border-[#ddd] dark:border-[#444] border-solid bg-transparent cursor-pointer py-[0.6rem] px-4 text-[#111] dark:text-[#e8e8e8] text-[0.9rem] text-right w-full"
       >
         ‹
       </button>

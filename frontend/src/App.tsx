@@ -1,14 +1,12 @@
 import { useEffect, useRef } from 'react'
 import { useSessions } from './hooks/useSessions'
 import { useChat } from './hooks/useChat'
-import { useTheme } from './hooks/useTheme'
 import Sidebar from './components/layout/Sidebar'
 import ChatWindow from './components/chat/ChatWindow'
 
 export default function App() {
   const sessions = useSessions()
   const chat = useChat()
-  const { theme, toggleTheme } = useTheme()
   const initialized = useRef(false)
 
   // On first mount: restore the most recent session or create a fresh one.
@@ -41,34 +39,22 @@ export default function App() {
     sessions.startNewSession().catch(console.error)
   }
 
-  const isDark = theme === 'dark'
-
   return (
     <div
-      style={{
-        display: 'flex',
-        height: '100vh',
-        fontFamily:
-          '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-        overflow: 'hidden',
-        backgroundColor: isDark ? '#1e1e1e' : '#fff',
-        color: isDark ? '#e8e8e8' : '#111',
-      }}
+      className="flex h-screen overflow-hidden bg-white dark:bg-[#1e1e1e] text-[#111] dark:text-[#e8e8e8]"
+      style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}
     >
       <Sidebar
         summaries={sessions.summaries}
         currentSessionId={sessions.currentSessionId}
         onNewSession={handleNewSession}
         onSelectSession={sessions.switchSession}
-        theme={theme}
-        toggleTheme={toggleTheme}
       />
       <ChatWindow
         messages={chat.messages}
         streaming={chat.streaming}
         onSend={handleSend}
         onStop={chat.abortStream}
-        theme={theme}
       />
     </div>
   )
