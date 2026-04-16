@@ -1,10 +1,21 @@
+import { useState } from 'react'
+import type { CSSProperties } from 'react'
 import { SessionSummary } from '../../lib/api'
+import { Theme } from '../../hooks/useTheme'
+
+const COLLAPSE_KEY = 'propesqi_sidebar_collapsed'
 
 interface Props {
   summaries: SessionSummary[]
   currentSessionId: string | null
   onNewSession: () => void
   onSelectSession: (id: string) => void
+  theme: Theme
+  toggleTheme: () => void
+}
+
+function loadCollapsed(): boolean {
+  return localStorage.getItem(COLLAPSE_KEY) === 'true'
 }
 
 function formatDate(iso: string): string {
@@ -27,29 +38,136 @@ export default function Sidebar({
   currentSessionId,
   onNewSession,
   onSelectSession,
+  theme,
+  toggleTheme,
 }: Props) {
+  const [collapsed, setCollapsed] = useState<boolean>(loadCollapsed)
+
+  const isDark = theme === 'dark'
+  const bg = isDark ? '#2d2d2d' : '#fafafa'
+  const border = isDark ? '#444' : '#ddd'
+  const text = isDark ? '#e8e8e8' : '#111'
+
+  const toggleCollapsed = () => {
+    setCollapsed(prev => {
+      const next = !prev
+      localStorage.setItem(COLLAPSE_KEY, String(next))
+      return next
+    })
+  }
+
+  const iconBtnStyle: CSSProperties = {
+    border: 'none',
+    background: 'transparent',
+    cursor: 'pointer',
+    color: text,
+    fontFamily: 'inherit',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  }
+
+  if (collapsed) {
+    return (
+      <aside
+        style={{
+          width: '48px',
+          borderRight: `1px solid ${border}`,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          backgroundColor: bg,
+          flexShrink: 0,
+        }}
+      >
+        <div
+          style={{
+            padding: '0.5rem 0',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '0.5rem',
+            width: '100%',
+          }}
+        >
+          <button
+            onClick={onNewSession}
+            title="Nova conversa"
+            style={{
+              ...iconBtnStyle,
+              width: '36px',
+              height: '36px',
+              borderRadius: '0.5rem',
+              border: '1px solid #0078d4',
+              color: '#0078d4',
+              fontSize: '1.2rem',
+            }}
+          >
+            +
+          </button>
+        </div>
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={toggleCollapsed}
+          title="Expandir"
+          style={{
+            ...iconBtnStyle,
+            width: '36px',
+            height: '36px',
+            borderRadius: '0.5rem',
+            fontSize: '1rem',
+            marginBottom: '0.75rem',
+          }}
+        >
+          ›
+        </button>
+      </aside>
+    )
+  }
+
   return (
     <aside
       style={{
         width: '260px',
         minWidth: '200px',
         maxWidth: '320px',
-        borderRight: '1px solid #ddd',
+        borderRight: `1px solid ${border}`,
         display: 'flex',
         flexDirection: 'column',
-        backgroundColor: '#fafafa',
+        backgroundColor: bg,
         flexShrink: 0,
       }}
     >
       <div
         style={{
           padding: '1rem',
-          borderBottom: '1px solid #ddd',
+          borderBottom: `1px solid ${border}`,
         }}
       >
-        <h2 style={{ margin: '0 0 0.75rem', fontSize: '1rem', fontWeight: 600 }}>
-          PROPESQI
-        </h2>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '0.75rem',
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600, color: text }}>
+            PROPESQI
+          </h2>
+          <button
+            onClick={toggleTheme}
+            title={isDark ? 'Modo claro' : 'Modo escuro'}
+            style={{
+              ...iconBtnStyle,
+              fontSize: '1rem',
+              padding: '0.25rem',
+              borderRadius: '0.25rem',
+            }}
+          >
+            {isDark ? '☀' : '🌙'}
+          </button>
+        </div>
         <button
           onClick={onNewSession}
           style={{
@@ -76,6 +194,7 @@ export default function Sidebar({
               opacity: 0.5,
               fontSize: '0.85rem',
               margin: 0,
+              color: text,
             }}
           >
             Sem conversas anteriores.
@@ -93,10 +212,13 @@ export default function Sidebar({
               borderRadius: '0.5rem',
               border: 'none',
               backgroundColor:
-                s.session_id === currentSessionId ? '#e3f2fd' : 'transparent',
+                s.session_id === currentSessionId
+                  ? isDark ? '#1a4a6e' : '#e3f2fd'
+                  : 'transparent',
               cursor: 'pointer',
               fontFamily: 'inherit',
               marginBottom: '0.25rem',
+              color: text,
             }}
           >
             <div
@@ -122,6 +244,24 @@ export default function Sidebar({
           </button>
         ))}
       </div>
+
+      <button
+        onClick={toggleCollapsed}
+        title="Recolher"
+        style={{
+          border: 'none',
+          borderTop: `1px solid ${border}`,
+          backgroundColor: 'transparent',
+          cursor: 'pointer',
+          padding: '0.6rem 1rem',
+          color: text,
+          fontSize: '0.9rem',
+          textAlign: 'right',
+          fontFamily: 'inherit',
+        }}
+      >
+        ‹
+      </button>
     </aside>
   )
 }

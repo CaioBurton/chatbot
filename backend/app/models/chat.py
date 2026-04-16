@@ -45,6 +45,7 @@ class ChatMessage(Base):
     role = Column(Text, nullable=False)
     content = Column(Text, nullable=False)
     sources = Column(JSONB, nullable=True)
+    feedback = Column(Text, nullable=True, default=None)
     created_at = Column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

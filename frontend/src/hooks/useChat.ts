@@ -23,6 +23,11 @@ export function useChat() {
     setMessages([])
   }, [])
 
+  const abortStream = useCallback(() => {
+    abortRef.current?.abort()
+    setStreaming(false)
+  }, [])
+
   const sendMessage = useCallback(
     async (text: string, sid: string) => {
       if (streaming) return
@@ -34,7 +39,7 @@ export function useChat() {
         sources: null,
         created_at: new Date().toISOString(),
       }
-      const assistantId = crypto.randomUUID()
+      let assistantId = crypto.randomUUID()
       const assistantPlaceholder: DisplayMessage = {
         id: assistantId,
         role: 'assistant',
@@ -89,6 +94,14 @@ export function useChat() {
                   m.id === assistantId ? { ...m, content: m.content + data } : m,
                 ),
               )
+            } else if (event === 'message_id') {
+              // Replace the temporary frontend UUID with the real DB UUID so
+              // feedback requests reference an existing row.
+              const realId = data
+              setMessages(prev =>
+                prev.map(m => (m.id === assistantId ? { ...m, id: realId } : m)),
+              )
+              assistantId = realId
             } else if (event === 'sources') {
               try {
                 const sources: SourceCitation[] = JSON.parse(data)
@@ -126,5 +139,5 @@ export function useChat() {
     [streaming],
   )
 
-  return { messages, streaming, sendMessage, loadHistory, clearMessages }
+  return { messages, streaming, sendMessage, loadHistory, clearMessages, abortStream }
 }

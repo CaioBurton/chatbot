@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     role        TEXT        NOT NULL CHECK (role IN ('user', 'assistant')),
     content     TEXT        NOT NULL,
     sources     JSONB,                               -- NULL for user turns
+    feedback    TEXT        CHECK (feedback IN ('up', 'down')),  -- NULL until rated
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

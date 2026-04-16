@@ -35,3 +35,7 @@ class ChatMessageResponse(BaseModel):
     created_at: str
 
     model_config = {"from_attributes": True}
+
+
+class MessageFeedbackRequest(BaseModel):
+    feedback: Literal["up", "down"]

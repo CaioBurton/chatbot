@@ -15,7 +15,7 @@ from app.core.config import get_settings
 from app.core.rag_engine import rag_stream
 from app.db.postgres import get_db
 from app.models.chat import ChatMessage, ChatSession
-from app.schemas.chat import ChatMessageResponse, ChatRequest, ChatSessionResponse, ChatSessionSummary, SourceCitation
+from app.schemas.chat import ChatMessageResponse, ChatRequest, ChatSessionResponse, ChatSessionSummary, MessageFeedbackRequest, SourceCitation
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -219,3 +219,24 @@ async def list_sessions(
         )
 
     return summaries
+
+
+# ---------------------------------------------------------------------------
+# PATCH /chat/messages/{message_id}/feedback — record thumbs up/down
+# ---------------------------------------------------------------------------
+
+@router.patch("/messages/{message_id}/feedback", response_model=dict[str, bool])
+async def submit_message_feedback(
+    message_id: UUID,
+    body: MessageFeedbackRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, bool]:
+    message = await db.get(ChatMessage, message_id)
+    if message is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found.",
+        )
+    message.feedback = body.feedback
+    await db.commit()
+    return {"ok": True}

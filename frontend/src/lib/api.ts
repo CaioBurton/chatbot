@@ -45,3 +45,15 @@ export async function getSessionSummaries(sessionIds: string[]): Promise<Session
   if (!res.ok) throw new Error(`Failed to fetch session summaries: ${res.status}`)
   return res.json() as Promise<SessionSummary[]>
 }
+
+export async function submitFeedback(messageId: string, feedback: 'up' | 'down'): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/chat/messages/${encodeURIComponent(messageId)}/feedback`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feedback }),
+    },
+  )
+  if (!res.ok) throw new Error(`Failed to submit feedback: ${res.status}`)
+}

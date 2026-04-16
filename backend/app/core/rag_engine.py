@@ -23,7 +23,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from sqlalchemy import select, update
@@ -136,6 +136,7 @@ async def _persist_messages(
     user_query: str,
     assistant_response: str,
     sources: list[dict],
+    assistant_id: UUID | None = None,
 ) -> None:
     now = datetime.now(timezone.utc)
     db.add(
@@ -149,6 +150,7 @@ async def _persist_messages(
     )
     db.add(
         ChatMessage(
+            id=assistant_id if assistant_id is not None else uuid4(),
             session_id=session_id,
             role="assistant",
             content=assistant_response,
@@ -189,6 +191,11 @@ async def rag_stream(
     reranked_parents: list[dict] = []
 
     try:
+        # Pre-generate the assistant message UUID so the frontend can link
+        # feedback requests to the correct DB row before the message is saved.
+        assistant_msg_id = uuid4()
+        yield {"event": "message_id", "data": str(assistant_msg_id)}
+
         # ------------------------------------------------------------------ #
         # 1. Query preprocessing                                              #
         # ------------------------------------------------------------------ #
@@ -253,7 +260,7 @@ async def rag_stream(
             yield {"event": "token", "data": _FALLBACK_MESSAGE}
             yield {"event": "sources", "data": "[]"}
             yield {"event": "done", "data": "[DONE]"}
-            await _persist_messages(db, session_id, query, _FALLBACK_MESSAGE, [])
+            await _persist_messages(db, session_id, query, _FALLBACK_MESSAGE, [], assistant_id=assistant_msg_id)
             return
 
         # ------------------------------------------------------------------ #
@@ -325,7 +332,7 @@ async def rag_stream(
         # Persist only after both terminal events have been yielded.
         # Wrap separately so a DB failure does not raise after the stream is closed.
         try:
-            await _persist_messages(db, session_id, query, full_response, sources_data)
+            await _persist_messages(db, session_id, query, full_response, sources_data, assistant_id=assistant_msg_id)
         except Exception:
             logger.error("rag_stream: failed to persist messages for session %s", session_id)
 
