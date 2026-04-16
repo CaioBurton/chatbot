@@ -88,3 +88,57 @@ async def hybrid_search(
     )
 
     return result.points
+
+
+# ------------------------------------------------------------------ #
+# Parent-Child context expansion                                      #
+# Purpose : Expand retrieved child chunks to their parent text and   #
+#           deduplicate by parent_id, keeping the highest-scoring    #
+#           representative when multiple children share a parent.    #
+# Note    : Pure synchronous function — no I/O.                      #
+# ------------------------------------------------------------------ #
+
+def expand_to_parents(points: list[ScoredPoint]) -> list[dict]:
+    """
+    Expand a list of retrieved child ScoredPoints to their parent context.
+
+    For each point the parent_text is taken from the payload (falling back
+    to text_preview when parent_text is absent). Points that share the same
+    parent_id are deduplicated: only the entry with the highest score is
+    kept. The returned list preserves descending-score order.
+
+    Args:
+        points: ScoredPoint list returned by hybrid_search / rerank.
+
+    Returns:
+        List of dicts with keys: parent_id, parent_text, doc_id,
+        source, page_number, score.
+    """
+    # best score seen per parent_id → dict entry
+    seen: dict[str, dict] = {}
+
+    for point in points:
+        payload = point.payload or {}
+        parent_id: str = payload.get("parent_id") or str(point.id)
+        parent_text: str = payload.get("parent_text") or payload.get("text_preview", "")
+
+        # Skip points whose text could not be resolved — an empty context
+        # block has no value for the LLM and would fail schema validation.
+        if not parent_text.strip():
+            continue
+
+        entry = {
+            "parent_id": parent_id,
+            "parent_text": parent_text,
+            "doc_id": payload.get("doc_id", ""),
+            "source": payload.get("source", ""),
+            # Explicit int cast: Qdrant may round-trip numeric payload fields
+            # as float (e.g. 1.0) depending on JSON serialisation path.
+            "page_number": int(payload.get("page_number") or 0),
+            "score": point.score,
+        }
+
+        if parent_id not in seen or point.score > seen[parent_id]["score"]:
+            seen[parent_id] = entry
+
+    return sorted(seen.values(), key=lambda e: e["score"], reverse=True)

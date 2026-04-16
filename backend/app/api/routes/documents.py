@@ -13,7 +13,7 @@ from app.core.security import require_admin
 from app.db.postgres import get_db
 from app.db.qdrant import COLLECTION_NAME, get_qdrant_client
 from app.db.reranker import rerank
-from app.db.search import hybrid_search
+from app.db.search import expand_to_parents, hybrid_search
 from app.ingestion.processor import process_document
 from app.models.document import Document
 from app.schemas.document import (
@@ -21,6 +21,7 @@ from app.schemas.document import (
     DocumentListItem,
     DocumentUploadResponse,
     HybridSearchRequest,
+    ParentContextItem,
     SearchResultItem,
 )
 
@@ -163,6 +164,42 @@ async def list_documents(
     )
     docs = result.scalars().all()
     return [DocumentListItem.model_validate(doc) for doc in docs]
+
+
+# ------------------------------------------------------------------ #
+# POST /documents/search/expanded                                     #
+# Purpose : Hybrid search + parent-child context expansion.           #
+#           Each retrieved child chunk is expanded to its 512-token   #
+#           parent_text (stored in Qdrant payload at ingestion time). #
+#           Results sharing the same parent_id are deduplicated,      #
+#           keeping the highest-scoring representative.               #
+# Auth    : require_admin (JWT, role admin or superadmin)             #
+# Status  : 200 OK                                                    #
+# Note    : All input validation is enforced by Pydantic before this  #
+#           handler runs, regardless of the frontend.                 #
+# ------------------------------------------------------------------ #
+@router.post("/search/expanded", response_model=list[ParentContextItem])
+async def search_documents_expanded(
+    body: HybridSearchRequest,
+    _user=Depends(require_admin),
+) -> list[ParentContextItem]:
+    points = await hybrid_search(
+        query=body.query,
+        top_k=body.top_k,
+        score_threshold=body.score_threshold,
+    )
+
+    if body.rerank:
+        points = await rerank(
+            query=body.query,
+            points=points,
+            top_k=body.reranker_top_k,
+            score_threshold=body.reranker_score_threshold,
+        )
+
+    expanded = expand_to_parents(points)
+
+    return [ParentContextItem(**item) for item in expanded]
 
 
 # ------------------------------------------------------------------ #

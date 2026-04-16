@@ -83,3 +83,17 @@ class SearchResultItem(BaseModel):
     text_preview: str
     chunk_index: int
     rerank_score: float | None = None
+
+
+# ------------------------------------------------------------------ #
+# Parent-Child context expansion — response schema for               #
+# POST /documents/search/expanded                                     #
+# ------------------------------------------------------------------ #
+
+class ParentContextItem(BaseModel):
+    parent_id: str
+    parent_text: str = Field(..., min_length=1)
+    doc_id: str
+    source: str
+    page_number: int
+    score: float
