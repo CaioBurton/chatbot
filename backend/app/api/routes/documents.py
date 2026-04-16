@@ -6,7 +6,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, UploadFile, status
 from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
-from sqlalchemy import select
+from sqlalchemy import case, func, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_admin
@@ -19,9 +20,12 @@ from app.models.document import Document
 from app.schemas.document import (
     DocumentDetail,
     DocumentListItem,
+    DocumentStatsResponse,
     DocumentUploadResponse,
     HybridSearchRequest,
     ParentContextItem,
+    ReindexAllRequest,
+    ReindexAllResponse,
     SearchResultItem,
 )
 
@@ -164,6 +168,136 @@ async def list_documents(
     )
     docs = result.scalars().all()
     return [DocumentListItem.model_validate(doc) for doc in docs]
+
+
+# ------------------------------------------------------------------ #
+# GET /documents/stats                                                #
+# Purpose : Aggregate document counts by status + total chunks.      #
+# Auth    : require_admin (JWT, role admin or superadmin)             #
+# Status  : 200 OK                                                    #
+# Note    : Static path — registered before /{doc_id}.               #
+# ------------------------------------------------------------------ #
+@router.get("/stats", response_model=DocumentStatsResponse)
+async def get_document_stats(
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_admin),
+) -> DocumentStatsResponse:
+    res = await db.execute(
+        select(
+            func.count(Document.id).label("total"),
+            func.count(case((Document.status == "active", 1))).label("active"),
+            func.count(case((Document.status == "processing", 1))).label("processing"),
+            func.count(case((Document.status == "error", 1))).label("error"),
+            func.coalesce(func.sum(Document.total_chunks), 0).label("total_chunks"),
+        )
+    )
+    row = res.one()
+    return DocumentStatsResponse(
+        total=row.total,
+        active=row.active,
+        processing=row.processing,
+        error=row.error,
+        total_chunks=row.total_chunks,
+    )
+
+
+# ------------------------------------------------------------------ #
+# POST /documents/reindex-all                                         #
+# Purpose : Bulk re-queue documents for ingestion.                    #
+#   scope="pending" → only documents in error or uploaded state.      #
+#   scope="all"     → delete all Qdrant points, reset every document  #
+#                     to uploaded, queue up to 200.                   #
+# Auth    : require_admin (JWT, role admin or superadmin)             #
+# Status  : 202 Accepted                                              #
+# Limit   : max 200 background tasks per call (runaway guard).        #
+# Note    : Static path — registered before /{doc_id}/reindex.        #
+# ------------------------------------------------------------------ #
+_MAX_REINDEX = 200
+
+
+@router.post(
+    "/reindex-all",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ReindexAllResponse,
+)
+async def reindex_all_documents(
+    body: ReindexAllRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_admin),
+) -> ReindexAllResponse:
+    if body.scope == "all":
+        # ---------------------------------------------------------------- #
+        # 1. Bulk-reset DB FIRST so that a Qdrant failure leaves documents  #
+        #    in "uploaded" state — harmless and retryable — rather than    #
+        #    having vectors purged while DB still reports them as active.   #
+        # ---------------------------------------------------------------- #
+        await db.execute(
+            sa_update(Document)
+            .values(status="uploaded", error_message=None)
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
+
+        # 2. Purge all Qdrant vectors after the DB is safely reset.
+        qdrant = get_qdrant_client()
+        await qdrant.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=FilterSelector(filter=Filter(must=[])),
+        )
+
+        # 3. Fetch up to _MAX_REINDEX docs, deterministically ordered.
+        res = await db.execute(
+            select(Document).order_by(Document.created_at).limit(_MAX_REINDEX)
+        )
+        docs = list(res.scalars().all())
+    else:
+        # pending scope: only error / uploaded documents
+        res = await db.execute(
+            select(Document)
+            .where(Document.status.in_(("error", "uploaded")))
+            .order_by(Document.created_at)
+            .limit(_MAX_REINDEX)
+        )
+        docs = list(res.scalars().all())
+        for doc in docs:
+            doc.status = "uploaded"
+            doc.error_message = None
+        await db.commit()
+
+    # -------------------------------------------------------------------- #
+    # Schedule background tasks; documents whose physical file is missing   #
+    # are reset to "error" with an explanatory message so they don't remain #
+    # stuck in "uploaded" state indefinitely.                               #
+    # -------------------------------------------------------------------- #
+    queued = 0
+    missing_ids: list[uuid.UUID] = []
+    for doc in docs:
+        file_path = _UPLOAD_DIR / doc.filename
+        if file_path.exists():
+            background_tasks.add_task(
+                process_document,
+                str(doc.id),
+                str(file_path),
+                doc.original_name,
+            )
+            queued += 1
+        else:
+            missing_ids.append(doc.id)
+
+    if missing_ids:
+        await db.execute(
+            sa_update(Document)
+            .where(Document.id.in_(missing_ids))
+            .values(
+                status="error",
+                error_message="Arquivo não encontrado em disco; faça o upload novamente.",
+            )
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
+
+    return ReindexAllResponse(queued=queued)
 
 
 # ------------------------------------------------------------------ #

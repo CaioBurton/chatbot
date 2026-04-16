@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
@@ -97,3 +98,27 @@ class ParentContextItem(BaseModel):
     source: str
     page_number: int
     score: float
+
+
+# ------------------------------------------------------------------ #
+# Admin — reindex-all request / response                             #
+# ------------------------------------------------------------------ #
+
+class ReindexAllRequest(BaseModel):
+    scope: Literal["pending", "all"]
+
+
+class ReindexAllResponse(BaseModel):
+    queued: int
+
+
+# ------------------------------------------------------------------ #
+# Admin — document statistics                                        #
+# ------------------------------------------------------------------ #
+
+class DocumentStatsResponse(BaseModel):
+    total: int
+    active: int
+    processing: int
+    error: int
+    total_chunks: int

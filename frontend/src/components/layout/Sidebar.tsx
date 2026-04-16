@@ -9,6 +9,7 @@ interface Props {
   currentSessionId: string | null
   onNewSession: () => void
   onSelectSession: (id: string) => void
+  onAdminClick: () => void
 }
 
 function loadCollapsed(): boolean {
@@ -39,6 +40,7 @@ export default function Sidebar({
   currentSessionId,
   onNewSession,
   onSelectSession,
+  onAdminClick,
 }: Props) {
   const [collapsed, setCollapsed] = useState<boolean>(loadCollapsed)
   const { theme, toggleTheme } = useTheme()
@@ -66,6 +68,14 @@ export default function Sidebar({
             className="w-9 h-9 rounded-lg border border-[#0078d4] text-[#0078d4] text-[1.2rem] flex items-center justify-center bg-transparent cursor-pointer"
           >
             +
+          </button>
+          <button
+            type="button"
+            onClick={onAdminClick}
+            title="Administração"
+            className="w-9 h-9 rounded-lg border border-[#ddd] dark:border-[#555] text-[#555] dark:text-[#aaa] text-sm flex items-center justify-center bg-transparent cursor-pointer hover:border-[#0078d4] hover:text-[#0078d4]"
+          >
+            ⚙
           </button>
         </div>
         <div className="flex-1" />
@@ -103,6 +113,13 @@ export default function Sidebar({
           className="w-full py-2 rounded-lg border border-[#0078d4] bg-transparent text-[#0078d4] cursor-pointer text-[0.9rem]"
         >
           + Nova conversa
+        </button>
+        <button
+          type="button"
+          onClick={onAdminClick}
+          className="mt-2 w-full py-1.5 rounded-lg border border-[#ddd] dark:border-[#555] bg-transparent text-[#555] dark:text-[#aaa] cursor-pointer text-[0.85rem] hover:border-[#0078d4] hover:text-[#0078d4]"
+        >
+          ⚙ Admin
         </button>
       </div>
 
