@@ -10,6 +10,8 @@ services:
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
+    ports:
+      - "5432:5432"   # expõe para o host
     container_name: propesqi_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}

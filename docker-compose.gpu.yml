@@ -28,9 +28,9 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      # Keep only one model loaded in VRAM at a time.
-      # gemma3:12b-q8_0 uses ~13 GB; a second model would cause OOM on 16 GB VRAM.
-      - OLLAMA_MAX_LOADED_MODELS=1
+      # bge-m3 ~1.1 GiB + gemma3:12b Q4_K_M ~7.7 GiB = ~8.8 GiB, well within 16 GiB VRAM.
+      # Set to 2 so both models stay loaded simultaneously (no reload delay between calls).
+      - OLLAMA_MAX_LOADED_MODELS=2
       # Serialise inference requests so concurrent calls don't thrash the GPU.
       # Raise to 2 only if VRAM headroom allows (e.g., after switching to a Q4 model).
       - OLLAMA_NUM_PARALLEL=1

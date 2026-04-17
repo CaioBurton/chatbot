@@ -39,7 +39,7 @@ export function useChat() {
         sources: null,
         created_at: new Date().toISOString(),
       }
-      let assistantId = crypto.randomUUID()
+      let assistantId: string = crypto.randomUUID()
       const assistantPlaceholder: DisplayMessage = {
         id: assistantId,
         role: 'assistant',
@@ -73,7 +73,9 @@ export function useChat() {
           const { done, value } = await reader.read()
           if (done) break
 
-          buf += decoder.decode(value, { stream: true })
+          // Normalize CRLF → LF so block splitting works regardless of
+          // whether the server (sse_starlette) uses \r\n or \n line endings.
+          buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
 
           // Process complete SSE blocks separated by double newlines
           const blocks = buf.split('\n\n')
@@ -111,6 +113,12 @@ export function useChat() {
               } catch {
                 // ignore malformed sources payload
               }
+            } else if (event === 'error') {
+              setMessages(prev =>
+                prev.map(m =>
+                  m.id === assistantId ? { ...m, content: data || '(erro interno)' } : m,
+                ),
+              )
             }
           }
         }

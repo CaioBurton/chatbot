@@ -37,7 +37,7 @@ from qdrant_client.models import ScoredPoint
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "gemma3:12b-instruct-q8_0"
+_MODEL = "gemma3:12b"
 
 _FALLBACK_MESSAGE = (
     "Não possuo informações sobre este assunto em minha base de documentos. "
@@ -71,19 +71,21 @@ HISTÓRICO DA CONVERSA:
 # ---------------------------------------------------------------------------
 
 async def _ollama_generate(prompt: str, temperature: float, settings) -> str:
-    """Call Ollama /api/generate (non-streaming) and return the response text."""
-    async with httpx.AsyncClient(timeout=60.0) as http:
+    """Call Ollama /api/chat (non-streaming) and return the response text."""
+    async with httpx.AsyncClient(timeout=300.0) as http:
         resp = await http.post(
-            f"{settings.OLLAMA_BASE_URL}/api/generate",
+            f"{settings.OLLAMA_BASE_URL}/api/chat",
             json={
                 "model": _MODEL,
-                "prompt": prompt,
+                "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
                 "options": {"temperature": temperature},
             },
         )
+        if resp.status_code >= 400:
+            logger.error("_ollama_generate: HTTP %s — body: %s", resp.status_code, resp.text[:500])
         resp.raise_for_status()
-        return resp.json().get("response", "").strip()
+        return resp.json().get("message", {}).get("content", "").strip()
 
 
 def _build_context(parents: list[dict]) -> str:
@@ -294,7 +296,7 @@ async def rag_stream(
         # ------------------------------------------------------------------ #
         # 8. LLM streaming                                                    #
         # ------------------------------------------------------------------ #
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=120.0)) as http:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as http:
             async with http.stream(
                 "POST",
                 f"{settings.OLLAMA_BASE_URL}/api/chat",
@@ -342,6 +344,6 @@ async def rag_stream(
     except Exception:
         # Unexpected error (Ollama down, network failure, etc.) — send error event
         # so the client does not hang waiting for 'done'.
-        logger.error("rag_stream: unhandled error for session %s", session_id)
+        logger.error("rag_stream: unhandled error for session %s", session_id, exc_info=True)
         yield {"event": "error", "data": "Ocorreu um erro interno. Por favor, tente novamente."}
         yield {"event": "done", "data": "[DONE]"}
