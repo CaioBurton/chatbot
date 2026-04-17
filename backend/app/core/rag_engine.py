@@ -44,6 +44,20 @@ _FALLBACK_MESSAGE = (
     "Para esclarecimentos adicionais, entre em contato diretamente com a PROPESQI."
 )
 
+# Compression prompt is module-level to avoid per-call re-allocation and to
+# keep the instruction surface auditable in one place.
+_COMPRESS_PROMPT_TEMPLATE = (
+    "Dado o trecho de documento abaixo e a pergunta do usuário, extraia "
+    "APENAS as frases ou passagens do trecho que são diretamente relevantes "
+    "para responder à pergunta. Mantenha o texto original das frases "
+    "selecionadas sem parafrasear. Se nenhuma parte do trecho for claramente "
+    "relevante, retorne o trecho completo sem alterações. Não adicione "
+    "explicações, prefácios ou comentários — responda apenas com o texto "
+    "extraído.\n\n"
+    "Pergunta: {query}\n\n"
+    "Trecho:\n{text}"
+)
+
 _SYSTEM_PROMPT = """\
 Você é o assistente virtual da Pró-Reitoria de Pesquisa e Inovação (PROPESQI) \
 da Universidade Federal do Piauí (UFPI). Responda sempre em português formal \
@@ -110,6 +124,86 @@ def _build_history(messages: list[ChatMessage]) -> str:
         text = msg.content[:500]
         parts.append(f"{role_label}: {text}")
     return "\n".join(parts)
+
+
+async def _compress_context(
+    query: str,
+    parents: list[dict],
+    settings,
+) -> list[dict]:
+    """
+    Contextual Compression (PLANEJAMENTO.md §5.3).
+
+    For each parent chunk, calls the LLM to extract only the sentences that are
+    directly relevant to *query*, discarding irrelevant boilerplate and reducing
+    context noise before the final prompt is built.
+
+    Failure contract:
+    - All LLM calls run concurrently via asyncio.gather(return_exceptions=True).
+    - If any individual call raises an exception the original parent_text is kept
+      unchanged (graceful degradation — never blocks the pipeline).
+    - If the LLM returns an empty string the original parent_text is kept.
+    - Input dicts are never mutated; the function returns shallow copies.
+
+    Settings:
+    - CONTEXTUAL_COMPRESSION_ENABLED  — master on/off toggle (bool).
+    - CONTEXTUAL_COMPRESSION_TEMPERATURE — LLM temperature for the extraction
+      call (float 0.0–1.0; low values produce deterministic extractions).
+
+    Pipeline placement:
+    - Runs as stage 6b, after expand_to_parents() (step 6) and before
+      _build_context() / prompt construction (step 7).  Placing it here means
+      compression operates on full parent chunks (maximum context), and the
+      reduced text is what the final prompt sees — minimising token usage while
+      preserving retrieval recall.
+    """
+    # Truncate query to bound prompt size — guards against large user inputs
+    # amplifying each concurrent LLM call (up to 5 calls × query size).
+    query_for_prompt = query[:1000]
+
+    async def _compress_one(parent: dict) -> dict:
+        original_text = parent.get("parent_text", "")
+        prompt = _COMPRESS_PROMPT_TEMPLATE.format(
+            query=query_for_prompt,
+            text=original_text,
+        )
+        compressed = await _ollama_generate(
+            prompt,
+            temperature=settings.CONTEXTUAL_COMPRESSION_TEMPERATURE,
+            settings=settings,
+        )
+        # Sanity check: output longer than 1.5× the original signals the LLM
+        # added explanatory text or was prompt-injected — discard and fall back.
+        if compressed and original_text and len(compressed) > len(original_text) * 1.5:
+            logger.warning(
+                "_compress_context: compressed output exceeds 1.5× original length "
+                "— possible hallucination or prompt injection; keeping original."
+            )
+            compressed = ""
+        result = compressed if compressed else original_text
+        return {**parent, "parent_text": result}
+
+    tasks = [_compress_one(p) for p in parents]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    compressed_parents: list[dict] = []
+    for original, outcome in zip(parents, results):
+        # BaseException (not Exception) is required: asyncio.CancelledError is a
+        # BaseException subclass and can be returned by gather(return_exceptions=True)
+        # if an individual inner coroutine is cancelled independently. Using Exception
+        # would let a CancelledError fall through to the else branch and be used as
+        # a dict, causing a TypeError.
+        if isinstance(outcome, BaseException):
+            logger.warning(
+                "_compress_context: compression failed for a parent chunk — "
+                "keeping original text. Error: %s",
+                outcome,
+            )
+            compressed_parents.append(original)
+        else:
+            compressed_parents.append(outcome)
+
+    return compressed_parents
 
 
 def _build_sources(parents: list[dict]) -> list[dict]:
@@ -297,6 +391,12 @@ async def rag_stream(
             .limit(10)
         )
         history_msgs = list(reversed(history_result.scalars().all()))
+
+        # ------------------------------------------------------------------ #
+        # 6b. Contextual Compression                                         #
+        # ------------------------------------------------------------------ #
+        if settings.CONTEXTUAL_COMPRESSION_ENABLED:
+            reranked_parents = await _compress_context(query, reranked_parents, settings)
 
         # ------------------------------------------------------------------ #
         # 7. Prompt construction                                              #

@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     MULTIQUERY_TEMPERATURE: float = Field(0.3, ge=0.0, le=1.0)
     MULTIQUERY_COUNT: int = Field(2, ge=1, le=5)
 
+    # Contextual Compression (PLANEJAMENTO.md §5.3)
+    CONTEXTUAL_COMPRESSION_ENABLED: bool = True
+    CONTEXTUAL_COMPRESSION_TEMPERATURE: float = Field(0.1, ge=0.0, le=1.0)
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     def allowed_origins_list(self) -> list[str]:
