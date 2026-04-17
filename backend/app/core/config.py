@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     RERANKER_TOP_K: int = Field(5, ge=1, le=100)
     RERANKER_SCORE_THRESHOLD: float = Field(0.5, ge=0.0, le=1.0)
 
+    # HyDE + Multi-query expansion (PLANEJAMENTO.md §4.2)
+    HYDE_TEMPERATURE: float = Field(0.3, ge=0.0, le=1.0)
+    MULTIQUERY_TEMPERATURE: float = Field(0.3, ge=0.0, le=1.0)
+    MULTIQUERY_COUNT: int = Field(2, ge=1, le=5)
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     def allowed_origins_list(self) -> list[str]:

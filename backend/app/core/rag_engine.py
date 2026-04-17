@@ -9,7 +9,7 @@ Implements rag_stream(), an async generator that yields SSE-compatible dicts:
 Pipeline stages:
   1. Query preprocessing (whitespace normalisation)
   2. HyDE — hypothetical-document embedding via Ollama
-  3. Multi-query — 2 reformulations; union + dedup across hybrid_search calls
+  3. Multi-query — MULTIQUERY_COUNT reformulations; union + dedup across hybrid_search calls
   4. Reranking via bge-reranker-v2-m3
   5. Fallback guard (no results or max score < 0.3)
   6. Context assembly — expand_to_parents, top-5; chat history from DB
@@ -202,6 +202,13 @@ async def rag_stream(
         # 1. Query preprocessing                                              #
         # ------------------------------------------------------------------ #
         query = " ".join(query.split())
+        # Guard: min_length=1 validates the raw string but all-whitespace input
+        # normalises to ""; return fallback without persisting an empty query.
+        if not query:
+            yield {"event": "token", "data": _FALLBACK_MESSAGE}
+            yield {"event": "sources", "data": "[]"}
+            yield {"event": "done", "data": "[DONE]"}
+            return
 
         # ------------------------------------------------------------------ #
         # 2. HyDE — hypothetical document embedding                          #
@@ -210,25 +217,38 @@ async def rag_stream(
             f"Escreva uma resposta curta e factual para a seguinte pergunta "
             f"sobre documentos da PROPESQI/UFPI:\n\n{query}"
         )
-        hyde_answer = await _ollama_generate(hyde_prompt, temperature=0.3, settings=settings)
 
         # ------------------------------------------------------------------ #
-        # 3. Multi-query reformulations                                       #
+        # 3. Multi-query reformulations (parallel with HyDE via gather)      #
         # ------------------------------------------------------------------ #
         reform_prompt = (
-            f"Gere 2 reformulações diferentes da seguinte pergunta para melhorar "
+            f"Gere {settings.MULTIQUERY_COUNT} reformulações diferentes da seguinte pergunta para melhorar "
             f"a busca em uma base de documentos acadêmicos. "
-            f"Responda apenas com as 2 reformulações, uma por linha, sem numeração.\n\n"
+            f"Responda apenas com as {settings.MULTIQUERY_COUNT} reformulações, uma por linha, sem numeração.\n\n"
             f"Pergunta original: {query}"
         )
-        reform_text = await _ollama_generate(reform_prompt, temperature=0.3, settings=settings)
+        # Both LLM calls are independent — run concurrently to reduce latency.
+        # return_exceptions=True allows graceful degradation: if one call fails,
+        # the pipeline continues with whichever results are still valid.
+        _llm_results = await asyncio.gather(
+            _ollama_generate(hyde_prompt, temperature=settings.HYDE_TEMPERATURE, settings=settings),
+            _ollama_generate(reform_prompt, temperature=settings.MULTIQUERY_TEMPERATURE, settings=settings),
+            return_exceptions=True,
+        )
+        hyde_answer = _llm_results[0] if isinstance(_llm_results[0], str) else ""
+        reform_text = _llm_results[1] if isinstance(_llm_results[1], str) else ""
+        if not isinstance(_llm_results[0], str):
+            logger.warning("rag_stream: HyDE LLM call failed — skipping: %s", _llm_results[0])
+        if not isinstance(_llm_results[1], str):
+            logger.warning("rag_stream: multi-query LLM call failed — skipping reformulations: %s", _llm_results[1])
         extra_queries = [
             line.strip()
             for line in reform_text.splitlines()
             if line.strip()
-        ][:2]
+        ][:settings.MULTIQUERY_COUNT]
 
-        all_queries = [hyde_answer] + extra_queries  # 3 searches: HyDE + 2 reformulations
+        # Original query included in union set (PLANEJAMENTO.md §4.2 step 3)
+        all_queries = [query, hyde_answer] + extra_queries  # original + HyDE + reformulations
 
         # Union + dedup across all queries (keep highest score per point ID)
         merged_by_id: dict[str, ScoredPoint] = {}
