@@ -145,6 +145,27 @@ CREATE OR REPLACE TRIGGER trg_documents_updated_at
     EXECUTE FUNCTION _set_updated_at();
 
 -- =============================================================================
+-- rag_evaluations
+-- Persists RAGAS metric scores from admin-triggered evaluation runs.
+-- metadata stores raw per-sample scores and any per-run errors as JSONB.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS rag_evaluations (
+    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    dataset_name        TEXT        NOT NULL,
+    faithfulness        FLOAT,
+    answer_relevancy    FLOAT,
+    context_precision   FLOAT,
+    context_recall      FLOAT,
+    answer_correctness  FLOAT,
+    num_samples         INTEGER     NOT NULL CHECK (num_samples >= 1),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata            JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_rag_evaluations_created_at
+    ON rag_evaluations (created_at DESC);
+
+-- =============================================================================
 -- Privilege grants for the limited-privilege application role
 -- propesqi_app is created by init/00_roles.sh (runs before this script).
 -- The backend service connects as propesqi_app (not the superuser).
