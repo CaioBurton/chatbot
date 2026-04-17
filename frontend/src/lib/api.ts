@@ -120,6 +120,37 @@ export function authFetch(url: string, init?: RequestInit): Promise<Response> {
   })
 }
 
+export interface RagParameters {
+  id: number
+  parent_chunk_tokens: number
+  child_chunk_tokens: number
+  search_top_k: number
+  search_score_threshold: number
+  reranker_top_k: number
+  reranker_score_threshold: number
+  updated_at: string
+}
+
+/** GET /api/admin/rag-parameters — returns current RAG config. Requires admin JWT. */
+export async function getRagParameters(): Promise<RagParameters> {
+  const res = await authFetch(`${API_BASE}/admin/rag-parameters`)
+  if (!res.ok) throw new Error(`Failed to fetch RAG parameters: ${res.status}`)
+  return res.json() as Promise<RagParameters>
+}
+
+/** PUT /api/admin/rag-parameters — persists updated RAG config. Requires admin JWT. */
+export async function updateRagParameters(
+  params: Omit<RagParameters, 'id' | 'updated_at'>,
+): Promise<RagParameters> {
+  const res = await authFetch(`${API_BASE}/admin/rag-parameters`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  })
+  if (!res.ok) throw new Error(`Failed to update RAG parameters: ${res.status}`)
+  return res.json() as Promise<RagParameters>
+}
+
 /** POST /api/auth/login — returns tokens on success, throws on error. */
 export async function loginApi(
   email: string,

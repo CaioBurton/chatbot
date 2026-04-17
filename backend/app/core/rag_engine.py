@@ -30,6 +30,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.db.rag_config import get_rag_config
 from app.db.reranker import rerank
 from app.db.search import expand_to_parents, hybrid_search
 from app.models.chat import ChatMessage, ChatSession
@@ -283,6 +284,7 @@ async def rag_stream(
     DB writes are made; the generator exits cleanly.
     """
     settings = get_settings()
+    rag_cfg = await get_rag_config(db)
     response_parts: list[str] = []
     reranked_parents: list[dict] = []
 
@@ -349,7 +351,11 @@ async def rag_stream(
         for q in all_queries:
             if not q:
                 continue
-            pts = await hybrid_search(q, top_k=20)
+            pts = await hybrid_search(
+                q,
+                top_k=rag_cfg.search_top_k,
+                score_threshold=rag_cfg.search_score_threshold,
+            )
             for pt in pts:
                 pid = str(pt.id)
                 existing = merged_by_id.get(pid)
@@ -364,8 +370,8 @@ async def rag_stream(
         reranked = await rerank(
             query,
             merged_points,
-            top_k=settings.RERANKER_TOP_K,
-            score_threshold=settings.RERANKER_SCORE_THRESHOLD,
+            top_k=rag_cfg.reranker_top_k,
+            score_threshold=rag_cfg.reranker_score_threshold,
         )
 
         # ------------------------------------------------------------------ #

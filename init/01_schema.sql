@@ -166,6 +166,28 @@ CREATE INDEX IF NOT EXISTS idx_rag_evaluations_created_at
     ON rag_evaluations (created_at DESC);
 
 -- =============================================================================
+-- rag_config
+-- Single-row table (id must always equal 1) for runtime-adjustable RAG params.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS rag_config (
+    id                      INT         PRIMARY KEY DEFAULT 1,
+    parent_chunk_tokens     INT         NOT NULL DEFAULT 512,
+    child_chunk_tokens      INT         NOT NULL DEFAULT 128,
+    search_top_k            INT         NOT NULL DEFAULT 20,
+    search_score_threshold  FLOAT       NOT NULL DEFAULT 0.0,
+    reranker_top_k          INT         NOT NULL DEFAULT 5,
+    reranker_score_threshold FLOAT      NOT NULL DEFAULT 0.5,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT rag_config_single_row CHECK (id = 1)
+);
+
+INSERT INTO rag_config (id, parent_chunk_tokens, child_chunk_tokens, search_top_k,
+                        search_score_threshold, reranker_top_k, reranker_score_threshold,
+                        updated_at)
+VALUES (1, 512, 128, 20, 0.0, 5, 0.5, NOW())
+ON CONFLICT (id) DO NOTHING;
+
+-- =============================================================================
 -- Privilege grants for the limited-privilege application role
 -- propesqi_app is created by init/00_roles.sh (runs before this script).
 -- The backend service connects as propesqi_app (not the superuser).

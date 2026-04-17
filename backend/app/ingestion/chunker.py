@@ -93,10 +93,12 @@ async def chunk_pages(
     pages: list[dict[str, Any]],
     doc_id: str,
     source: str,
+    parent_tokens: int = 512,
+    child_tokens: int = 128,
 ) -> list[dict[str, Any]]:
     """Async wrapper: runs the CPU-bound chunking in the default thread executor."""
     created_at = datetime.now(timezone.utc).isoformat()
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
-        None, _sync_chunk, pages, doc_id, source, created_at
+        None, _sync_chunk, pages, doc_id, source, created_at, parent_tokens, child_tokens
     )

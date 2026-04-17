@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.core.progress import publish
 from app.db.postgres import AsyncSessionLocal
 from app.db.qdrant import COLLECTION_NAME, DENSE_VECTOR_NAME, SPARSE_VECTOR_NAME, get_qdrant_client
+from app.db.rag_config import get_rag_config
 from app.ingestion.chunker import chunk_pages
 from app.ingestion.extractors.ocr import extract_pdf_ocr
 from app.ingestion.extractors.pdf import extract_pdf
@@ -85,6 +86,7 @@ async def process_document(
             # ------------------------------------------------------------------ #
             # 2. Extract text from PDF
             # ------------------------------------------------------------------ #
+            rag_cfg = await get_rag_config(db)
             await _safe_publish(document_id, {
                 "step": "extracting",
                 "detail": "Extraindo texto do PDF...",
@@ -108,8 +110,14 @@ async def process_document(
                 "detail": "Fragmentando o texto em chunks...",
                 "progress": 35,
             })
+            # Chunk-size changes apply only to documents processed after the
+            # change; existing indexed chunks are unaffected.
             chunks: list[dict[str, Any]] = await chunk_pages(
-                pages, document_id, original_name
+                pages,
+                document_id,
+                original_name,
+                parent_tokens=rag_cfg.parent_chunk_tokens,
+                child_tokens=rag_cfg.child_chunk_tokens,
             )
 
             if not chunks:

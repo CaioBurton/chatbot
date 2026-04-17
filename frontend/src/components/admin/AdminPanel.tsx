@@ -2,6 +2,7 @@ import { useState } from 'react'
 import StatsBar from './StatsBar'
 import UploadZone from './UploadZone'
 import DocumentTable from './DocumentTable'
+import RagParametersPanel from './RagParametersPanel'
 import ReindexControls from './ReindexControls'
 
 interface Props {
@@ -68,6 +69,14 @@ export default function AdminPanel({ logout, onBack }: Props) {
             Reindexação
           </h2>
           <ReindexControls onReindexed={refresh} />
+        </section>
+
+        {/* RAG parameters */}
+        <section>
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-[#555] dark:text-[#aaa]">
+            Parâmetros RAG
+          </h2>
+          <RagParametersPanel />
         </section>
 
         {/* Document list */}
