@@ -9,6 +9,7 @@ interface Props {
   currentSessionId: string | null
   onNewSession: () => void
   onSelectSession: (id: string) => void
+  onDeleteSession: (id: string) => void
   onAdminClick: () => void
 }
 
@@ -40,6 +41,7 @@ export default function Sidebar({
   currentSessionId,
   onNewSession,
   onSelectSession,
+  onDeleteSession,
   onAdminClick,
 }: Props) {
   const [collapsed, setCollapsed] = useState<boolean>(loadCollapsed)
@@ -130,23 +132,35 @@ export default function Sidebar({
           </p>
         )}
         {summaries.map(s => (
-          <button
-            type="button"
+          <div
             key={s.session_id}
-            onClick={() => onSelectSession(s.session_id)}
-            className={`block w-full text-left px-3 py-[0.6rem] rounded-lg border-0 cursor-pointer mb-1 text-[#111] dark:text-[#e8e8e8] ${
+            className={`group flex items-center rounded-lg mb-1 ${
               s.session_id === currentSessionId
                 ? 'bg-[#e3f2fd] dark:bg-[#1a4a6e]'
-                : 'bg-transparent'
+                : 'bg-transparent hover:bg-[#f0f0f0] dark:hover:bg-[#3a3a3a]'
             }`}
           >
-            <div className="text-[0.85rem] font-medium overflow-hidden text-ellipsis whitespace-nowrap">
-              {s.preview ?? '(sem mensagens)'}
-            </div>
-            <div className="text-[0.75rem] opacity-[0.55] mt-[0.2rem]">
-              {formatDate(s.last_activity)}
-            </div>
-          </button>
+            <button
+              type="button"
+              onClick={() => onSelectSession(s.session_id)}
+              className="flex-1 text-left px-3 py-[0.6rem] rounded-lg border-0 cursor-pointer bg-transparent text-[#111] dark:text-[#e8e8e8] min-w-0"
+            >
+              <div className="text-[0.85rem] font-medium overflow-hidden text-ellipsis whitespace-nowrap">
+                {s.preview ?? '(sem mensagens)'}
+              </div>
+              <div className="text-[0.75rem] opacity-[0.55] mt-[0.2rem]">
+                {formatDate(s.last_activity)}
+              </div>
+            </button>
+            <button
+              type="button"
+              title="Apagar conversa"
+              onClick={e => { e.stopPropagation(); onDeleteSession(s.session_id) }}
+              className="opacity-0 group-hover:opacity-100 shrink-0 w-7 h-7 mr-1 rounded border-0 bg-transparent cursor-pointer text-[#888] hover:text-red-500 flex items-center justify-center text-sm transition-opacity"
+            >
+              🗑
+            </button>
+          </div>
         ))}
       </div>
 

@@ -222,6 +222,28 @@ async def list_sessions(
 
 
 # ---------------------------------------------------------------------------
+# DELETE /chat/sessions/{session_id} — remove a session and its messages
+# ---------------------------------------------------------------------------
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_session(
+    session_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Permanently delete a chat session and all its messages.
+    """
+    session = await db.get(ChatSession, session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found.",
+        )
+    await db.delete(session)
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
 # PATCH /chat/messages/{message_id}/feedback — record thumbs up/down
 # ---------------------------------------------------------------------------
 

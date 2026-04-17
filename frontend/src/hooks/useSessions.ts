@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { createSession, getSessionSummaries, SessionSummary } from '../lib/api'
+import { createSession, getSessionSummaries, deleteSession as apiDeleteSession, SessionSummary } from '../lib/api'
 
 const STORAGE_KEY = 'propesqi_session_ids'
 const MAX_STORED_SESSIONS = 50
@@ -64,6 +64,17 @@ export function useSessions() {
     setCurrentSessionId(id)
   }, [])
 
+  const removeSession = useCallback(async (id: string) => {
+    await apiDeleteSession(id)
+    setSessionIds(prev => {
+      const next = prev.filter(s => s !== id)
+      saveStoredIds(next)
+      return next
+    })
+    setSummaries(prev => prev.filter(s => s.session_id !== id))
+    setCurrentSessionId(prev => (prev === id ? null : prev))
+  }, [])
+
   return {
     sessionIds,
     summaries,
@@ -72,6 +83,7 @@ export function useSessions() {
     addSession,
     startNewSession,
     switchSession,
+    removeSession,
     setCurrentSessionId,
   }
 }

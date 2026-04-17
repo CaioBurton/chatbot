@@ -50,6 +50,15 @@ export default function App() {
     return () => window.removeEventListener('propesqi:auth-error', handleAuthError)
   }, [auth.logout])
 
+  const handleDeleteSession = (id: string) => {
+    sessions.removeSession(id).then(() => {
+      // If we just deleted the active session, start a fresh one
+      if (id === sessions.currentSessionId) {
+        sessions.startNewSession().catch(console.error)
+      }
+    }).catch(console.error)
+  }
+
   const handleSend = (text: string) => {
     if (!sessions.currentSessionId) return
     chat.sendMessage(text, sessions.currentSessionId).catch(console.error)
@@ -94,6 +103,7 @@ export default function App() {
         currentSessionId={sessions.currentSessionId}
         onNewSession={handleNewSession}
         onSelectSession={sessions.switchSession}
+        onDeleteSession={handleDeleteSession}
         onAdminClick={handleAdminClick}
       />
       <ChatWindow

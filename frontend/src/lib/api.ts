@@ -85,6 +85,13 @@ export async function submitFeedback(messageId: string, feedback: 'up' | 'down')
   if (!res.ok) throw new Error(`Failed to submit feedback: ${res.status}`)
 }
 
+export async function deleteSession(sessionId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/chat/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok && res.status !== 404) throw new Error(`Failed to delete session: ${res.status}`)
+}
+
 // ------------------------------------------------------------------ //
 // Auth helpers                                                        //
 // ------------------------------------------------------------------ //
