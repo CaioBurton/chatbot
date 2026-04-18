@@ -9,7 +9,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sse_starlette.sse import EventSourceResponse
+from starlette.responses import StreamingResponse
 
 from app.core.config import get_settings
 from app.core.rag_engine import rag_stream
@@ -78,11 +78,11 @@ async def create_session(
 # POST /chat/stream — RAG streaming endpoint (public)
 # ---------------------------------------------------------------------------
 
-@router.post("/stream", response_class=EventSourceResponse)
+@router.post("/stream")
 async def chat_stream(
     request: ChatRequest,
     db: AsyncSession = Depends(get_db),
-) -> EventSourceResponse:
+) -> StreamingResponse:
     """
     Stream a RAG-grounded response as Server-Sent Events.
 
@@ -106,7 +106,23 @@ async def chat_stream(
             )
         session_id = request.session_id
 
-    return EventSourceResponse(rag_stream(request.message, session_id, db))
+    async def generate():
+        async for event_dict in rag_stream(request.message, session_id, db):
+            event_type = event_dict.get("event", "message")
+            data = str(event_dict.get("data", ""))
+            # Per SSE spec, multi-line data needs one "data: " prefix per line
+            data_lines = "\n".join(f"data: {line}" for line in data.split("\n"))
+            yield f"event: {event_type}\n{data_lines}\n\n".encode("utf-8")
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

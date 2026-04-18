@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { RefreshCw, Trash2, ChevronLeft, ChevronRight } from 'lucide-react'
 import { authFetch, API_BASE, type DocumentListItem } from '../../lib/api'
 
 const PAGE_SIZE = 20
@@ -165,16 +166,18 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
                         <button
                           type="button"
                           onClick={() => handleReindex(doc)}
-                          className="rounded border border-[#0078d4] px-2 py-0.5 text-xs text-[#0078d4] hover:bg-[#e3f2fd] dark:hover:bg-[#1a4a6e] cursor-pointer"
+                          className="rounded border border-[#0078d4] px-2 py-0.5 text-xs text-[#0078d4] hover:bg-[#e3f2fd] dark:hover:bg-[#1a4a6e] cursor-pointer flex items-center gap-1 transition-colors"
                         >
+                          <RefreshCw size={11} />
                           Reindexar
                         </button>
                       )}
                       <button
                         type="button"
                         onClick={() => handleDelete(doc)}
-                        className="rounded border border-red-400 px-2 py-0.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 cursor-pointer"
+                        className="rounded border border-red-400 px-2 py-0.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 cursor-pointer flex items-center gap-1 transition-colors"
                       >
+                        <Trash2 size={11} />
                         Excluir
                       </button>
                     </div>
@@ -191,18 +194,20 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
           type="button"
           disabled={page === 0 || loading}
           onClick={() => changePage(-1)}
-          className="rounded border border-[#ddd] dark:border-[#444] px-3 py-1 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed hover:bg-[#f5f5f5] dark:hover:bg-[#333]"
+          className="rounded border border-[#ddd] dark:border-[#444] px-3 py-1 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed hover:bg-[#f5f5f5] dark:hover:bg-[#333] flex items-center gap-1 transition-colors"
         >
-          ← Anterior
+          <ChevronLeft size={14} />
+          Anterior
         </button>
         <span>Página {page + 1}</span>
         <button
           type="button"
           disabled={!hasMore || loading}
           onClick={() => changePage(1)}
-          className="rounded border border-[#ddd] dark:border-[#444] px-3 py-1 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed hover:bg-[#f5f5f5] dark:hover:bg-[#333]"
+          className="rounded border border-[#ddd] dark:border-[#444] px-3 py-1 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed hover:bg-[#f5f5f5] dark:hover:bg-[#333] flex items-center gap-1 transition-colors"
         >
-          Próxima →
+          Próxima
+          <ChevronRight size={14} />
         </button>
       </div>
     </div>

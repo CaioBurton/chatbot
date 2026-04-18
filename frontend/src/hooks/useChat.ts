@@ -13,10 +13,38 @@ export function useChat() {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [streaming, setStreaming] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  const streamingRef = useRef(false)
+  const historyAbortRef = useRef<AbortController | null>(null)
+  const historyRequestIdRef = useRef(0)
+
+  const invalidateHistoryRequests = useCallback(() => {
+    historyRequestIdRef.current += 1
+    historyAbortRef.current?.abort()
+    historyAbortRef.current = null
+  }, [])
 
   const loadHistory = useCallback(async (sid: string) => {
-    const history = await getSessionHistory(sid)
-    setMessages(history)
+    const requestId = historyRequestIdRef.current + 1
+    historyRequestIdRef.current = requestId
+
+    historyAbortRef.current?.abort()
+    const abort = new AbortController()
+    historyAbortRef.current = abort
+
+    try {
+      const history = await getSessionHistory(sid, abort.signal)
+      if (historyRequestIdRef.current === requestId && !abort.signal.aborted) {
+        setMessages(history)
+      }
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        throw err
+      }
+    } finally {
+      if (historyAbortRef.current === abort) {
+        historyAbortRef.current = null
+      }
+    }
   }, [])
 
   const clearMessages = useCallback(() => {
@@ -25,12 +53,19 @@ export function useChat() {
 
   const abortStream = useCallback(() => {
     abortRef.current?.abort()
+    streamingRef.current = false
     setStreaming(false)
   }, [])
 
   const sendMessage = useCallback(
     async (text: string, sid: string) => {
-      if (streaming) return
+      // Use ref for the guard so this callback never needs to be recreated.
+      if (streamingRef.current) return
+      streamingRef.current = true
+
+      // React StrictMode can trigger overlapping history loads during mount.
+      // Invalidate all of them before appending the optimistic chat state.
+      invalidateHistoryRequests()
 
       const userMsg: DisplayMessage = {
         id: crypto.randomUUID(),
@@ -56,7 +91,10 @@ export function useChat() {
       try {
         const res = await fetch(`${API_BASE}/chat/stream`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+          },
           body: JSON.stringify({ session_id: sid, message: text }),
           signal: abort.signal,
         })
@@ -83,11 +121,14 @@ export function useChat() {
 
           for (const block of blocks) {
             let event = 'message'
-            let data = ''
+            // Collect all data: lines and join with \n per the SSE spec so
+            // that tokens containing newline characters are not truncated.
+            const dataLines: string[] = []
             for (const line of block.split('\n')) {
               if (line.startsWith('event: ')) event = line.slice(7).trim()
-              else if (line.startsWith('data: ')) data = line.slice(6)
+              else if (line.startsWith('data: ')) dataLines.push(line.slice(6))
             }
+            const data = dataLines.join('\n')
             if (!data || data === '[DONE]') continue
 
             if (event === 'token') {
@@ -140,11 +181,14 @@ export function useChat() {
           )
         }
       } finally {
+        streamingRef.current = false
         setStreaming(false)
         abortRef.current = null
       }
     },
-    [streaming],
+    // Stable callback — the streaming guard uses streamingRef, not the state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [invalidateHistoryRequests],
   )
 
   return { messages, streaming, sendMessage, loadHistory, clearMessages, abortStream }

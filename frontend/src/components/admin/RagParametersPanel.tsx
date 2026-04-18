@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Save, Loader2, CheckCircle2 } from 'lucide-react'
 import { authFetch, API_BASE } from '../../lib/api'
 
 interface RagConfig {
@@ -173,12 +174,17 @@ export default function RagParametersPanel() {
         <button
           type="submit"
           disabled={saving}
-          className="rounded-lg border border-[#0078d4] bg-transparent px-4 py-2 text-sm text-[#0078d4] hover:bg-[#e3f2fd] dark:hover:bg-[#1a4a6e] disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+          className="rounded-lg border border-[#0078d4] bg-transparent px-4 py-2 text-sm text-[#0078d4] hover:bg-[#e3f2fd] dark:hover:bg-[#1a4a6e] disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
         >
-          {saving ? 'Salvando…' : 'Salvar parâmetros'}
+          {saving ? (
+            <><Loader2 size={14} className="animate-spin" />Salvando…</>
+          ) : (
+            <><Save size={14} />Salvar parâmetros</>
+          )}
         </button>
         {saved && (
-          <span className="text-sm text-green-700 dark:text-green-400">
+          <span className="text-sm text-green-700 dark:text-green-400 flex items-center gap-1 animate-fade-in">
+            <CheckCircle2 size={14} />
             Parâmetros salvos com sucesso.
           </span>
         )}

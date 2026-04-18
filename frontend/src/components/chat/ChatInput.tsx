@@ -1,4 +1,5 @@
 import { useState, KeyboardEvent } from 'react'
+import { Send, Square } from 'lucide-react'
 
 interface Props {
   onSend: (text: string) => void
@@ -38,17 +39,19 @@ export default function ChatInput({ onSend, disabled, onStop }: Props) {
         <button
           type="button"
           onClick={onStop}
-          className="py-2 px-5 rounded-lg border-0 bg-[#c0392b] text-white cursor-pointer text-[0.9rem] self-end shrink-0"
+          className="py-2 px-4 rounded-lg border-0 bg-[#c0392b] text-white cursor-pointer text-[0.9rem] self-end shrink-0 flex items-center gap-2 hover:bg-[#a93226] transition-colors active:scale-95"
         >
-          ⏹ Parar
+          <Square size={14} fill="currentColor" />
+          Parar
         </button>
       ) : (
         <button
           type="button"
           onClick={handleSend}
           disabled={!value.trim()}
-          className="py-2 px-5 rounded-lg border-0 bg-[#0078d4] disabled:bg-[#aaa] text-white cursor-pointer disabled:cursor-not-allowed text-[0.9rem] self-end shrink-0"
+          className="py-2 px-4 rounded-lg border-0 bg-[#0078d4] disabled:bg-[#aaa] text-white cursor-pointer disabled:cursor-not-allowed text-[0.9rem] self-end shrink-0 flex items-center gap-2 hover:bg-[#006cbe] disabled:hover:bg-[#aaa] transition-colors active:scale-95"
         >
+          <Send size={14} />
           Enviar
         </button>
       )}

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { Lock, Loader2 } from 'lucide-react'
 
 interface Props {
   login: (email: string, password: string) => Promise<void>
@@ -33,7 +34,8 @@ export default function LoginPage({ login, onSuccess }: Props) {
   return (
     <div className="flex h-screen items-center justify-center bg-white dark:bg-[#1e1e1e]">
       <div className="w-full max-w-sm rounded-xl border border-[#ddd] dark:border-[#444] bg-[#fafafa] dark:bg-[#2d2d2d] p-8 shadow-sm">
-        <h1 className="mb-6 text-xl font-semibold text-[#111] dark:text-[#e8e8e8]">
+        <h1 className="mb-6 text-xl font-semibold text-[#111] dark:text-[#e8e8e8] flex items-center gap-2">
+          <Lock size={18} className="text-[#0078d4]" />
           Painel de Administração
         </h1>
 
@@ -83,9 +85,13 @@ export default function LoginPage({ login, onSuccess }: Props) {
           <button
             type="submit"
             disabled={loading}
-            className="mt-1 rounded-lg bg-[#0078d4] px-4 py-2 text-sm font-medium text-white hover:bg-[#006cbe] disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+            className="mt-1 rounded-lg bg-[#0078d4] px-4 py-2 text-sm font-medium text-white hover:bg-[#006cbe] disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
           >
-            {loading ? 'Entrando…' : 'Entrar'}
+            {loading ? (
+              <><Loader2 size={14} className="animate-spin" />Entrando…</>
+            ) : (
+              'Entrar'
+            )}
           </button>
         </form>
       </div>

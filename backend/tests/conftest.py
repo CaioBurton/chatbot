@@ -162,7 +162,8 @@ async def async_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     AsyncClient wired directly to the FastAPI ASGI app.
     No live HTTP server is required for latency tests.
     """
-    async with httpx.AsyncClient(app=_app, base_url="http://test") as client:
+    transport = httpx.ASGITransport(app=_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
 
 

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { ThumbsUp, ThumbsDown, Copy, Check } from 'lucide-react'
 import { DisplayMessage } from '../../hooks/useChat'
 import { submitFeedback } from '../../lib/api'
 
@@ -42,12 +43,12 @@ export default function MessageBubble({ message, onFeedback }: Props) {
   }
 
   return (
-    <div className={`flex mb-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex mb-3 animate-fade-in ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
         className={`max-w-[70%] py-3 px-4 ${isUser ? 'rounded-[1rem_1rem_0_1rem]' : 'rounded-[1rem_1rem_1rem_0]'} ${bubbleClasses} whitespace-pre-wrap break-words leading-[1.5]`}
       >
         {message.content || (
-          <span className="opacity-40 italic">▌</span>
+          <span className="inline-block w-0.5 h-4 bg-current animate-blink" />
         )}
 
         {!isUser && hasContent && (
@@ -57,26 +58,26 @@ export default function MessageBubble({ message, onFeedback }: Props) {
               onClick={() => handleFeedback('up')}
               disabled={feedbackValue !== null}
               title="Resposta útil"
-              className={`border-0 font-[inherit] p-[0.1rem_0.3rem] rounded text-[0.85rem] text-[#111] dark:text-[#e8e8e8] ${feedbackValue === 'up' ? 'bg-[#d4edda] dark:bg-[#2d6a2d]' : 'bg-transparent'}`}
+              className={`border-0 font-[inherit] p-[0.1rem_0.3rem] rounded text-[0.85rem] text-[#111] dark:text-[#e8e8e8] transition-transform hover:scale-110 active:scale-95 ${feedbackValue === 'up' ? 'bg-[#d4edda] dark:bg-[#2d6a2d]' : 'bg-transparent'}`}
               style={{
                 opacity: feedbackValue !== null && feedbackValue !== 'up' ? 0.35 : 1,
                 cursor: feedbackValue !== null ? 'default' : 'pointer',
               }}
             >
-              👍
+              <ThumbsUp size={14} />
             </button>
             <button
               type="button"
               onClick={() => handleFeedback('down')}
               disabled={feedbackValue !== null}
               title="Resposta não útil"
-              className={`border-0 font-[inherit] p-[0.1rem_0.3rem] rounded text-[0.85rem] text-[#111] dark:text-[#e8e8e8] ${feedbackValue === 'down' ? 'bg-[#f8d7da] dark:bg-[#6a2d2d]' : 'bg-transparent'}`}
+              className={`border-0 font-[inherit] p-[0.1rem_0.3rem] rounded text-[0.85rem] text-[#111] dark:text-[#e8e8e8] transition-transform hover:scale-110 active:scale-95 ${feedbackValue === 'down' ? 'bg-[#f8d7da] dark:bg-[#6a2d2d]' : 'bg-transparent'}`}
               style={{
                 opacity: feedbackValue !== null && feedbackValue !== 'down' ? 0.35 : 1,
                 cursor: feedbackValue !== null ? 'default' : 'pointer',
               }}
             >
-              👎
+              <ThumbsDown size={14} />
             </button>
           </div>
         )}
@@ -104,8 +105,9 @@ export default function MessageBubble({ message, onFeedback }: Props) {
             <button
               type="button"
               onClick={handleCopy}
-              className="border-0 bg-transparent font-[inherit] cursor-pointer p-[0.1rem_0.3rem] rounded text-[0.72rem] opacity-60 text-[#555] dark:text-[#c0c0c0]"
+              className="border-0 bg-transparent font-[inherit] cursor-pointer p-[0.1rem_0.3rem] rounded text-[0.72rem] opacity-60 text-[#555] dark:text-[#c0c0c0] flex items-center gap-1 hover:opacity-100 transition-opacity"
             >
+              {copied ? <Check size={12} /> : <Copy size={12} />}
               {copied ? 'Copiado!' : 'Copiar'}
             </button>
           </div>

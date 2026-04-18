@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type ChangeEvent } from 'react'
+import { FileText, CheckCircle2, XCircle, Loader2, UploadCloud } from 'lucide-react'
 import { API_BASE } from '../../lib/api'
 import { useIndexingProgress } from '../../hooks/useIndexingProgress'
 
@@ -60,29 +61,36 @@ function FileEntryRow({
   const latestEvent = events[events.length - 1]
 
   return (
-    <li className="rounded-lg border border-[#ddd] dark:border-[#444] bg-white dark:bg-[#1e1e1e] px-4 py-2">
+    <li className="rounded-lg border border-[#ddd] dark:border-[#444] bg-white dark:bg-[#1e1e1e] px-4 py-2 animate-fade-in">
       <div className="flex items-center justify-between text-sm">
-        <span className="max-w-[70%] overflow-hidden text-ellipsis whitespace-nowrap text-[#111] dark:text-[#e8e8e8]">
+        <span className="max-w-[70%] overflow-hidden text-ellipsis whitespace-nowrap text-[#111] dark:text-[#e8e8e8] flex items-center gap-2">
+          <FileText size={14} className="shrink-0 text-[#0078d4]" />
           {entry.name}
         </span>
         <span
           className={
             entry.status === 'done'
-              ? 'text-green-600 dark:text-green-400'
+              ? 'text-green-600 dark:text-green-400 flex items-center gap-1'
               : entry.status === 'error'
-                ? 'text-red-600 dark:text-red-400'
-                : 'text-[#777] dark:text-[#aaa]'
+                ? 'text-red-600 dark:text-red-400 flex items-center gap-1'
+                : 'text-[#777] dark:text-[#aaa] flex items-center gap-1'
           }
         >
-          {entry.status === 'uploading'
-            ? isIndexing
-              ? latestEvent
-                ? `${latestEvent.progress}%`
-                : '…'
-              : `${entry.progress}%`
-            : entry.status === 'done'
-              ? '✓'
-              : '✗'}
+          {entry.status === 'uploading' ? (
+            isIndexing ? (
+              latestEvent ? (
+                <><Loader2 size={12} className="animate-spin" />{latestEvent.progress}%</>
+              ) : (
+                <Loader2 size={12} className="animate-spin" />
+              )
+            ) : (
+              <><Loader2 size={12} className="animate-spin" />{entry.progress}%</>
+            )
+          ) : entry.status === 'done' ? (
+            <CheckCircle2 size={14} />
+          ) : (
+            <XCircle size={14} />
+          )}
         </span>
       </div>
 
@@ -248,7 +256,10 @@ export default function UploadZone({ onUploaded }: Props) {
             : 'border-[#ccc] dark:border-[#555] bg-[#fafafa] dark:bg-[#2d2d2d] hover:border-[#0078d4]'
         }`}
       >
-        <span className="text-3xl mb-2">📄</span>
+        <UploadCloud
+          size={36}
+          className={`mb-2 transition-transform ${dragging ? 'text-[#0078d4] scale-110' : 'text-[#aaa] dark:text-[#666]'}`}
+        />
         <p className="text-sm text-[#555] dark:text-[#aaa]">
           Arraste PDFs aqui ou{' '}
           <span className="text-[#0078d4] underline">clique para selecionar</span>

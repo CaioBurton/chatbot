@@ -59,8 +59,14 @@ export async function createSession(): Promise<SessionResponse> {
   return res.json() as Promise<SessionResponse>
 }
 
-export async function getSessionHistory(sessionId: string): Promise<ChatMessage[]> {
-  const res = await fetch(`${API_BASE}/chat/sessions/${encodeURIComponent(sessionId)}/history`)
+export async function getSessionHistory(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<ChatMessage[]> {
+  const res = await fetch(
+    `${API_BASE}/chat/sessions/${encodeURIComponent(sessionId)}/history`,
+    { signal },
+  )
   if (!res.ok) throw new Error(`Failed to fetch history: ${res.status}`)
   return res.json() as Promise<ChatMessage[]>
 }

@@ -26,4 +26,4 @@ class RagEvaluation(Base):
     created_at = Column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
-    metadata = Column(JSONB, nullable=True)
+    extra_metadata = Column("metadata", JSONB, nullable=True)

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ArrowLeft, LogOut } from 'lucide-react'
 import StatsBar from './StatsBar'
 import UploadZone from './UploadZone'
 import DocumentTable from './DocumentTable'
@@ -29,17 +30,19 @@ export default function AdminPanel({ logout, onBack }: Props) {
           <button
             type="button"
             onClick={onBack}
-            className="text-sm text-[#0078d4] hover:underline cursor-pointer bg-transparent border-0 p-0"
+            className="text-sm text-[#0078d4] hover:underline cursor-pointer bg-transparent border-0 p-0 flex items-center gap-1"
           >
-            ← Voltar ao chat
+            <ArrowLeft size={14} />
+            Voltar ao chat
           </button>
           <h1 className="text-base font-semibold">Painel de Administração</h1>
         </div>
         <button
           type="button"
           onClick={handleLogout}
-          className="text-sm text-[#777] dark:text-[#aaa] hover:text-red-600 dark:hover:text-red-400 cursor-pointer bg-transparent border-0"
+          className="text-sm text-[#777] dark:text-[#aaa] hover:text-red-600 dark:hover:text-red-400 cursor-pointer bg-transparent border-0 flex items-center gap-1 transition-colors"
         >
+          <LogOut size={14} />
           Sair
         </button>
       </header>
