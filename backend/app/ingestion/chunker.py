@@ -35,6 +35,7 @@ def _sync_chunk(
     pages: list[dict[str, Any]],
     doc_id: str,
     source: str,
+    display_name: str,
     created_at: str,
     parent_tokens: int = 512,
     child_tokens: int = 128,
@@ -75,6 +76,7 @@ def _sync_chunk(
                         "metadata": {
                             "doc_id": doc_id,
                             "source": source,
+                            "display_name": display_name,
                             "page_number": page_number,
                             "chunk_index": global_chunk_index,
                             "type": "child",
@@ -93,6 +95,7 @@ async def chunk_pages(
     pages: list[dict[str, Any]],
     doc_id: str,
     source: str,
+    display_name: str,
     parent_tokens: int = 512,
     child_tokens: int = 128,
 ) -> list[dict[str, Any]]:
@@ -100,5 +103,13 @@ async def chunk_pages(
     created_at = datetime.now(timezone.utc).isoformat()
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
-        None, _sync_chunk, pages, doc_id, source, created_at, parent_tokens, child_tokens
+        None,
+        _sync_chunk,
+        pages,
+        doc_id,
+        source,
+        display_name,
+        created_at,
+        parent_tokens,
+        child_tokens,
     )

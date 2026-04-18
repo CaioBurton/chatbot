@@ -7,15 +7,15 @@ Implements rag_stream(), an async generator that yields SSE-compatible dicts:
   {"event": "done",    "data": "[DONE]"}
 
 Pipeline stages:
-  1. Query preprocessing (whitespace normalisation)
-  2. HyDE — hypothetical-document embedding via Ollama
-  3. Multi-query — MULTIQUERY_COUNT reformulations; union + dedup across hybrid_search calls
-  4. Reranking via bge-reranker-v2-m3
-  5. Fallback guard (no results or max score < 0.3)
-  6. Context assembly — expand_to_parents, top-5; chat history from DB
-  7. Prompt construction using PROPESQI system prompt template
-  8. LLM streaming via Ollama /api/chat
-  9. Post-processing — save user + assistant messages; update last_activity
+    1. Query preprocessing (whitespace normalisation)
+    2. HyDE — hypothetical-document embedding via Ollama
+    3. Multi-query — MULTIQUERY_COUNT reformulations; union + dedup across hybrid_search calls
+    4. Reranking via bge-reranker-v2-m3
+    5. Fallback guard (no reranked results survive the configured threshold)
+    6. Context assembly — expand_to_parents, top-5; chat history from DB
+    7. Prompt construction using PROPESQI system prompt template
+    8. LLM streaming via Ollama /api/chat
+    9. Post-processing — save user + assistant messages; update last_activity
 """
 
 import asyncio
@@ -30,6 +30,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.document_names import format_document_display_name
 from app.db.rag_config import get_rag_config
 from app.db.reranker import rerank
 from app.db.search import expand_to_parents, hybrid_search
@@ -107,7 +108,11 @@ def _build_context(parents: list[dict]) -> str:
     parts = []
     for i, p in enumerate(parents, start=1):
         # Truncate source name to prevent excessively long prompt headers
-        source = p.get("source", "desconhecido")[:200]
+        source = (
+            p.get("display_name")
+            or format_document_display_name(p.get("source", ""))
+            or "desconhecido"
+        )[:200]
         page = p.get("page_number") or 0
         text = p.get("parent_text", "")
         header = f"[{i}] {source}" + (f" (p. {page})" if page else "")
@@ -220,6 +225,7 @@ def _build_sources(parents: list[dict]) -> list[dict]:
             {
                 "doc_id": doc_uuid,
                 "original_name": p.get("source", ""),
+                "display_name": p.get("display_name") or format_document_display_name(p.get("source", "")),
                 "page_number": page if page else None,
                 "score": round(float(p.get("score", 0.0)), 4),
             }
@@ -377,8 +383,7 @@ async def rag_stream(
         # ------------------------------------------------------------------ #
         # 5. Fallback guard                                                   #
         # ------------------------------------------------------------------ #
-        max_score = max((p.score for p in reranked), default=0.0)
-        if not reranked or max_score < 0.3:
+        if not reranked:
             yield {"event": "token", "data": _FALLBACK_MESSAGE}
             yield {"event": "sources", "data": "[]"}
             yield {"event": "done", "data": "[DONE]"}

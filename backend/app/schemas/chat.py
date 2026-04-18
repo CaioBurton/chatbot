@@ -12,6 +12,7 @@ class ChatRequest(BaseModel):
 class SourceCitation(BaseModel):
     doc_id: UUID
     original_name: str = Field(..., max_length=500)
+    display_name: Optional[str] = Field(None, max_length=500)
     page_number: Optional[int] = Field(None, ge=1)
     score: float = Field(..., ge=0.0, le=1.0)
 

@@ -34,6 +34,7 @@ export interface SessionResponse {
 export interface SourceCitation {
   doc_id: string
   original_name: string
+  display_name?: string | null
   page_number: number | null
   score: number
 }

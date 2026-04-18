@@ -90,7 +90,7 @@ export default function MessageBubble({ message, onFeedback }: Props) {
             <ul className="mt-1 mb-0 pl-5">
               {message.sources.map((s, i) => (
                 <li key={i}>
-                  {s.original_name}
+                  {s.display_name || s.original_name}
                   {s.page_number != null ? ` (p. ${s.page_number})` : ''}
                   {' \u2014 '}
                   {(s.score * 100).toFixed(0)}%

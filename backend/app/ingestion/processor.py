@@ -13,6 +13,7 @@ from qdrant_client.models import PointStruct
 from sqlalchemy import text, update
 
 from app.core.config import get_settings
+from app.core.document_names import resolve_document_display_name
 from app.core.progress import publish
 from app.db.postgres import AsyncSessionLocal
 from app.db.qdrant import COLLECTION_NAME, DENSE_VECTOR_NAME, SPARSE_VECTOR_NAME, get_qdrant_client
@@ -92,7 +93,7 @@ async def process_document(
                 "detail": "Extraindo texto do PDF...",
                 "progress": 10,
             })
-            pages, is_scanned = await extract_pdf(file_path)
+            pages, is_scanned, metadata_title = await extract_pdf(file_path)
 
             if is_scanned:
                 await _safe_publish(document_id, {
@@ -101,6 +102,12 @@ async def process_document(
                     "progress": 20,
                 })
                 pages = await extract_pdf_ocr(file_path)
+
+            display_name = resolve_document_display_name(
+                original_name=original_name,
+                pages=pages,
+                metadata_title=metadata_title,
+            )
 
             # ------------------------------------------------------------------ #
             # 3. Chunk the extracted text
@@ -116,6 +123,7 @@ async def process_document(
                 pages,
                 document_id,
                 original_name,
+                display_name,
                 parent_tokens=rag_cfg.parent_chunk_tokens,
                 child_tokens=rag_cfg.child_chunk_tokens,
             )

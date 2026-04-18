@@ -132,6 +132,7 @@ def expand_to_parents(points: list[ScoredPoint]) -> list[dict]:
             "parent_text": parent_text,
             "doc_id": payload.get("doc_id", ""),
             "source": payload.get("source", ""),
+            "display_name": payload.get("display_name", ""),
             # Explicit int cast: Qdrant may round-trip numeric payload fields
             # as float (e.g. 1.0) depending on JSON serialisation path.
             "page_number": int(payload.get("page_number") or 0),

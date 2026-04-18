@@ -8,6 +8,7 @@ synchronous CrossEncoder.predict() call to a thread-pool executor.
 """
 
 import asyncio
+import math
 import threading
 from typing import Optional
 
@@ -20,6 +21,26 @@ from app.core.config import get_settings
 # ------------------------------------------------------------------ #
 _encoder_lock = threading.Lock()
 _encoder = None  # type: ignore[assignment]
+
+
+def _sigmoid(score: float) -> float:
+    """Map raw cross-encoder logits to the 0-1 range expected by config/UI."""
+    if score >= 0:
+        scale = math.exp(-score)
+        return 1.0 / (1.0 + scale)
+    scale = math.exp(score)
+    return scale / (1.0 + scale)
+
+
+def _point_text(point: ScoredPoint) -> str:
+    """Resolve the best available text field from a retrieved Qdrant payload."""
+    payload = point.payload or {}
+    return (
+        payload.get("text")
+        or payload.get("text_preview")
+        or payload.get("parent_text")
+        or ""
+    )
 
 
 def _get_encoder():
@@ -57,9 +78,13 @@ async def rerank(
         score_threshold: Minimum rerank score; defaults to RERANKER_SCORE_THRESHOLD.
 
     Returns:
-        Up to top_k ScoredPoints sorted by rerank score descending, with
-        the rerank score stored in each point's payload under "rerank_score".
-        Points below score_threshold are excluded.
+        Up to top_k ScoredPoints sorted by rerank score descending. Raw
+        cross-encoder logits are normalized with sigmoid so the stored
+        rerank score matches the 0-1 range used by the API and admin UI.
+        The normalized rerank score is stored in each point's payload under
+        "rerank_score" and mirrored into point.score so downstream consumers
+        operate on the final ranking rather than the pre-rerank retrieval
+        score. Points below score_threshold are excluded.
     """
     # a) Return unchanged if list is empty
     if not points:
@@ -71,8 +96,9 @@ async def rerank(
     if score_threshold is None:
         score_threshold = settings.RERANKER_SCORE_THRESHOLD
 
-    # b) Extract text from each point's payload for scoring
-    texts = [point.payload.get("text", "") if point.payload else "" for point in points]
+    # b) Extract text from each point's payload for scoring. Live indexed
+    # points currently store text_preview + parent_text, not a full text key.
+    texts = [_point_text(point) for point in points]
     pairs = [(query, text) for text in texts]
 
     # c) Offload synchronous predict() to a thread-pool executor.
@@ -82,9 +108,12 @@ async def rerank(
     def _predict(query_text_pairs: list[tuple[str, str]]) -> list[float]:
         return _get_encoder().predict(query_text_pairs)
 
-    scores: list[float] = await asyncio.to_thread(_predict, pairs)
+    raw_scores: list[float] = await asyncio.to_thread(_predict, pairs)
+    scores = [_sigmoid(float(score)) for score in raw_scores]
 
-    # d/e/f) Apply threshold, sort, cap at top_k, and attach rerank_score
+    # d/e/f) Apply threshold, sort, cap at top_k, and attach rerank_score.
+    # Mirror the final score into point.score so every later pipeline stage
+    # uses the reranked relevance signal consistently.
     scored_pairs = list(zip(points, scores))
     scored_pairs = [(pt, float(sc)) for pt, sc in scored_pairs if float(sc) >= score_threshold]
     scored_pairs.sort(key=lambda x: x[1], reverse=True)
@@ -96,6 +125,6 @@ async def rerank(
         # so the original objects passed in by the caller are never mutated.
         new_payload = dict(point.payload) if point.payload else {}
         new_payload["rerank_score"] = score
-        result.append(point.model_copy(update={"payload": new_payload}))
+        result.append(point.model_copy(update={"payload": new_payload, "score": score}))
 
     return result
