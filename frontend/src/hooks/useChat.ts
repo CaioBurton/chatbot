@@ -1,6 +1,31 @@
 import { useState, useCallback, useRef } from 'react'
 import { getSessionHistory, SourceCitation, API_BASE } from '../lib/api'
 
+function splitIntoTypingChunks(text: string): string[] {
+  if (text.length <= 4) return [text]
+
+  const targetChunkSize = Math.max(2, Math.min(8, Math.ceil(text.length / 24)))
+  const chunks: string[] = []
+  let index = 0
+
+  while (index < text.length) {
+    let end = Math.min(text.length, index + targetChunkSize)
+
+    while (end < text.length && /[^\s]/.test(text[end - 1]) && /[^\s]/.test(text[end])) {
+      end += 1
+    }
+
+    chunks.push(text.slice(index, end))
+    index = end
+  }
+
+  return chunks
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
+}
+
 export interface DisplayMessage {
   id: string
   role: 'user' | 'assistant'
@@ -57,6 +82,70 @@ export function useChat() {
     setStreaming(false)
   }, [])
 
+  const applySseBlock = useCallback(
+    async (
+      block: string,
+      assistantIdsRef: { current: string; placeholder: string },
+      signal: AbortSignal,
+    ) => {
+      let event = 'message'
+      const dataLines: string[] = []
+
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event: ')) event = line.slice(7).trim()
+        else if (line.startsWith('data: ')) dataLines.push(line.slice(6))
+      }
+
+      const data = dataLines.join('\n')
+      if (!data || data === '[DONE]') return
+
+      const matchesAssistant = (messageId: string) =>
+        messageId === assistantIdsRef.placeholder || messageId === assistantIdsRef.current
+
+      const updateAssistant = (
+        updater: (message: DisplayMessage) => DisplayMessage,
+      ) => {
+        setMessages(prev =>
+          prev.map(message => {
+            if (!matchesAssistant(message.id)) return message
+            const nextMessage = updater(message)
+            return nextMessage.id === assistantIdsRef.current
+              ? nextMessage
+              : { ...nextMessage, id: assistantIdsRef.current }
+          }),
+        )
+      }
+
+      if (event === 'token') {
+        const chunks = splitIntoTypingChunks(data)
+        for (let index = 0; index < chunks.length; index += 1) {
+          if (signal.aborted) break
+
+          const chunk = chunks[index]
+          updateAssistant(message => ({ ...message, content: message.content + chunk }))
+
+          if (index < chunks.length - 1) {
+            await wait(18)
+          }
+        }
+      } else if (event === 'message_id') {
+        const realId = data
+        assistantIdsRef.current = realId
+        updateAssistant(message => ({ ...message, id: realId }))
+      } else if (event === 'sources') {
+        try {
+          const sources: SourceCitation[] = JSON.parse(data)
+          updateAssistant(message => ({ ...message, sources }))
+        } catch {
+          // ignore malformed sources payload
+        }
+      } else if (event === 'error') {
+        updateAssistant(message => ({ ...message, content: data || '(erro interno)' }))
+      }
+    },
+    [],
+  )
+
   const sendMessage = useCallback(
     async (text: string, sid: string) => {
       // Use ref for the guard so this callback never needs to be recreated.
@@ -87,6 +176,10 @@ export function useChat() {
 
       const abort = new AbortController()
       abortRef.current = abort
+      const assistantIdsRef = {
+        current: assistantId,
+        placeholder: assistantId,
+      }
 
       try {
         const res = await fetch(`${API_BASE}/chat/stream`, {
@@ -109,7 +202,10 @@ export function useChat() {
 
         while (true) {
           const { done, value } = await reader.read()
-          if (done) break
+          if (done) {
+            buf += decoder.decode()
+            break
+          }
 
           // Normalize CRLF → LF so block splitting works regardless of
           // whether the server (sse_starlette) uses \r\n or \n line endings.
@@ -120,49 +216,15 @@ export function useChat() {
           buf = blocks.pop() ?? ''
 
           for (const block of blocks) {
-            let event = 'message'
-            // Collect all data: lines and join with \n per the SSE spec so
-            // that tokens containing newline characters are not truncated.
-            const dataLines: string[] = []
-            for (const line of block.split('\n')) {
-              if (line.startsWith('event: ')) event = line.slice(7).trim()
-              else if (line.startsWith('data: ')) dataLines.push(line.slice(6))
-            }
-            const data = dataLines.join('\n')
-            if (!data || data === '[DONE]') continue
-
-            if (event === 'token') {
-              setMessages(prev =>
-                prev.map(m =>
-                  m.id === assistantId ? { ...m, content: m.content + data } : m,
-                ),
-              )
-            } else if (event === 'message_id') {
-              // Replace the temporary frontend UUID with the real DB UUID so
-              // feedback requests reference an existing row.
-              const realId = data
-              setMessages(prev =>
-                prev.map(m => (m.id === assistantId ? { ...m, id: realId } : m)),
-              )
-              assistantId = realId
-            } else if (event === 'sources') {
-              try {
-                const sources: SourceCitation[] = JSON.parse(data)
-                setMessages(prev =>
-                  prev.map(m => (m.id === assistantId ? { ...m, sources } : m)),
-                )
-              } catch {
-                // ignore malformed sources payload
-              }
-            } else if (event === 'error') {
-              setMessages(prev =>
-                prev.map(m =>
-                  m.id === assistantId ? { ...m, content: data || '(erro interno)' } : m,
-                ),
-              )
-            }
+            await applySseBlock(block, assistantIdsRef, abort.signal)
           }
         }
+
+        if (buf.trim()) {
+          await applySseBlock(buf, assistantIdsRef, abort.signal)
+        }
+
+        assistantId = assistantIdsRef.current
       } catch (err) {
         if ((err as Error).name !== 'AbortError') {
           console.error('Stream error:', err)
