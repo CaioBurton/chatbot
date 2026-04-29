@@ -81,6 +81,7 @@ export default function App() {
       <LoginPage
         login={auth.login}
         onSuccess={() => setView('admin')}
+        onBackToChat={() => setView('chat')}
       />
     )
   }
@@ -88,7 +89,13 @@ export default function App() {
   if (view === 'admin') {
     if (!auth.isAdmin) {
       // Token expired or cleared — send back to login
-      return <LoginPage login={auth.login} onSuccess={() => setView('admin')} />
+      return (
+        <LoginPage
+          login={auth.login}
+          onSuccess={() => setView('admin')}
+          onBackToChat={() => setView('chat')}
+        />
+      )
     }
     return <AdminPanel logout={auth.logout} onBack={() => setView('chat')} />
   }

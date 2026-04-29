@@ -21,6 +21,7 @@ Pipeline stages:
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import UUID, uuid4
@@ -80,6 +81,16 @@ CONTEXTO DOS DOCUMENTOS:
 HISTÓRICO DA CONVERSA:
 {chat_history}\
 """
+
+
+def _log_stage_duration(session_id: UUID, stage: str, start_time: float) -> None:
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    logger.info(
+        "rag_stream: session=%s stage=%s duration_ms=%.2f",
+        session_id,
+        stage,
+        elapsed_ms,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +304,7 @@ async def rag_stream(
     rag_cfg = await get_rag_config(db)
     response_parts: list[str] = []
     reranked_parents: list[dict] = []
+    pipeline_start = time.perf_counter()
 
     try:
         # Pre-generate the assistant message UUID so the frontend can link
@@ -303,7 +315,9 @@ async def rag_stream(
         # ------------------------------------------------------------------ #
         # 1. Query preprocessing                                              #
         # ------------------------------------------------------------------ #
+        stage_start = time.perf_counter()
         query = " ".join(query.split())
+        _log_stage_duration(session_id, "query_preprocessing", stage_start)
         # Guard: min_length=1 validates the raw string but all-whitespace input
         # normalises to ""; return fallback without persisting an empty query.
         if not query:
@@ -332,11 +346,13 @@ async def rag_stream(
         # Both LLM calls are independent — run concurrently to reduce latency.
         # return_exceptions=True allows graceful degradation: if one call fails,
         # the pipeline continues with whichever results are still valid.
+        stage_start = time.perf_counter()
         _llm_results = await asyncio.gather(
             _ollama_generate(hyde_prompt, temperature=settings.HYDE_TEMPERATURE, settings=settings),
             _ollama_generate(reform_prompt, temperature=settings.MULTIQUERY_TEMPERATURE, settings=settings),
             return_exceptions=True,
         )
+        _log_stage_duration(session_id, "query_expansion", stage_start)
         hyde_answer = _llm_results[0] if isinstance(_llm_results[0], str) else ""
         reform_text = _llm_results[1] if isinstance(_llm_results[1], str) else ""
         if not isinstance(_llm_results[0], str):
@@ -353,6 +369,7 @@ async def rag_stream(
         all_queries = [query, hyde_answer] + extra_queries  # original + HyDE + reformulations
 
         # Union + dedup across all queries (keep highest score per point ID)
+        stage_start = time.perf_counter()
         merged_by_id: dict[str, ScoredPoint] = {}
         for q in all_queries:
             if not q:
@@ -369,16 +386,19 @@ async def rag_stream(
                     merged_by_id[pid] = pt
 
         merged_points = list(merged_by_id.values())
+        _log_stage_duration(session_id, "retrieval", stage_start)
 
         # ------------------------------------------------------------------ #
         # 4. Reranking                                                        #
         # ------------------------------------------------------------------ #
+        stage_start = time.perf_counter()
         reranked = await rerank(
             query,
             merged_points,
             top_k=rag_cfg.reranker_top_k,
             score_threshold=rag_cfg.reranker_score_threshold,
         )
+        _log_stage_duration(session_id, "reranking", stage_start)
 
         # ------------------------------------------------------------------ #
         # 5. Fallback guard                                                   #
@@ -393,6 +413,7 @@ async def rag_stream(
         # ------------------------------------------------------------------ #
         # 6. Context assembly                                                 #
         # ------------------------------------------------------------------ #
+        stage_start = time.perf_counter()
         reranked_parents = expand_to_parents(reranked)[:5]
 
         history_result = await db.execute(
@@ -402,16 +423,20 @@ async def rag_stream(
             .limit(10)
         )
         history_msgs = list(reversed(history_result.scalars().all()))
+        _log_stage_duration(session_id, "context_assembly", stage_start)
 
         # ------------------------------------------------------------------ #
         # 6b. Contextual Compression                                         #
         # ------------------------------------------------------------------ #
         if settings.CONTEXTUAL_COMPRESSION_ENABLED:
+            stage_start = time.perf_counter()
             reranked_parents = await _compress_context(query, reranked_parents, settings)
+            _log_stage_duration(session_id, "contextual_compression", stage_start)
 
         # ------------------------------------------------------------------ #
         # 7. Prompt construction                                              #
         # ------------------------------------------------------------------ #
+        stage_start = time.perf_counter()
         context_text = _build_context(reranked_parents)
         chat_history_text = _build_history(history_msgs)
         system_content = _SYSTEM_PROMPT.format(
@@ -423,10 +448,12 @@ async def rag_stream(
         for msg in history_msgs:
             messages.append({"role": msg.role, "content": msg.content})
         messages.append({"role": "user", "content": query})
+        _log_stage_duration(session_id, "prompt_construction", stage_start)
 
         # ------------------------------------------------------------------ #
         # 8. LLM streaming                                                    #
         # ------------------------------------------------------------------ #
+        stage_start = time.perf_counter()
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as http:
             async with http.stream(
                 "POST",
@@ -452,10 +479,12 @@ async def rag_stream(
                         yield {"event": "token", "data": token}
                     if chunk.get("done"):
                         break
+        _log_stage_duration(session_id, "llm_streaming", stage_start)
 
         # ------------------------------------------------------------------ #
         # 9. Post-processing                                                  #
         # ------------------------------------------------------------------ #
+        stage_start = time.perf_counter()
         sources_data = _build_sources(reranked_parents)
         full_response = "".join(response_parts)
 
@@ -468,6 +497,7 @@ async def rag_stream(
             await _persist_messages(db, session_id, query, full_response, sources_data, assistant_id=assistant_msg_id)
         except Exception:
             logger.error("rag_stream: failed to persist messages for session %s", session_id)
+        _log_stage_duration(session_id, "post_processing", stage_start)
 
     except asyncio.CancelledError:
         # Client disconnected mid-stream — exit without writing partial data
@@ -478,3 +508,5 @@ async def rag_stream(
         logger.error("rag_stream: unhandled error for session %s", session_id, exc_info=True)
         yield {"event": "error", "data": "Ocorreu um erro interno. Por favor, tente novamente."}
         yield {"event": "done", "data": "[DONE]"}
+    finally:
+        _log_stage_duration(session_id, "total", pipeline_start)

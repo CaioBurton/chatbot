@@ -1,12 +1,13 @@
 import { useState, type FormEvent } from 'react'
-import { Lock, Loader2 } from 'lucide-react'
+import { Lock, Loader2, ArrowLeft } from 'lucide-react'
 
 interface Props {
   login: (email: string, password: string) => Promise<void>
   onSuccess: () => void
+  onBackToChat: () => void
 }
 
-export default function LoginPage({ login, onSuccess }: Props) {
+export default function LoginPage({ login, onSuccess, onBackToChat }: Props) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -94,6 +95,15 @@ export default function LoginPage({ login, onSuccess }: Props) {
             )}
           </button>
         </form>
+
+        <button
+          type="button"
+          onClick={onBackToChat}
+          className="mt-4 inline-flex items-center justify-center gap-1 rounded-lg border border-[#ddd] dark:border-[#555] px-2 py-1 text-xs text-[#333] dark:text-[#ddd] hover:bg-[#f3f3f3] dark:hover:bg-[#3a3a3a] transition-colors"
+        >
+          <ArrowLeft size={12} />
+          Voltar
+        </button>
       </div>
     </div>
   )
