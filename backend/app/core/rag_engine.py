@@ -21,6 +21,7 @@ Pipeline stages:
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
@@ -45,6 +46,31 @@ _MODEL = "gemma3:12b"
 _FALLBACK_MESSAGE = (
     "Não possuo informações sobre este assunto em minha base de documentos. "
     "Para esclarecimentos adicionais, entre em contato diretamente com a PROPESQI."
+)
+
+_GREETING_PATTERN = re.compile(
+    r"^\s*(ol[aá]|oi|bom\s*dia|boa\s*tarde|boa\s*noite|ei+|hey|hello|hi|"
+    r"tudo\s*bem|tudo\s*bom|como\s*vai|como\s*est[aá]s?|boa\s*hora)\s*[!?.]*\s*$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_GREETING_RESPONSE = (
+    "Olá! Seja bem-vindo(a) ao assistente virtual da PROPESQI/UFPI. "
+    "Estou aqui para responder dúvidas sobre pesquisa e inovação da "
+    "Universidade Federal do Piauí. Como posso ajudá-lo(a) hoje?"
+)
+
+_IDENTITY_PATTERN = re.compile(
+    r"^\s*(o\s*que\s*(voc[eê]|vc|tu|o\s*sr\.?)\s*(é|e|eh|representa|faz|significa)|quem\s+(é|e|eh)\s+(voc[eê]|vc|tu|o\s*sr\.?|esse\s+assistente|o\s+assistente)|para\s+qu[eê]\s+(voc[eê]|vc|serve)|como\s+(voc[eê]|vc)\s+(funciona|pode\s+me\s+ajudar|ajuda)|me\s+apresente|se\s+apresente|sua\s+fun[cç][aã]o)\s*[!?.]*\s*$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_IDENTITY_RESPONSE = (
+    "Sou o assistente virtual da Pró-Reitoria de Pesquisa e Inovação (PROPESQI) "
+    "da Universidade Federal do Piauí (UFPI). Fui desenvolvido para ajudá-lo(a) "
+    "a encontrar informações nos documentos institucionais da PROPESQI, como editais, "
+    "resoluções, regulamentos e outros materiais oficiais. "
+    "Basta me fazer uma pergunta sobre pesquisa e inovação na UFPI!"
 )
 
 # Compression prompt is module-level to avoid per-call re-allocation and to
@@ -324,6 +350,22 @@ async def rag_stream(
             yield {"event": "token", "data": _FALLBACK_MESSAGE}
             yield {"event": "sources", "data": "[]"}
             yield {"event": "done", "data": "[DONE]"}
+            return
+
+        # Guard: greetings and social messages — respond cordially without RAG pipeline
+        if _GREETING_PATTERN.match(query):
+            yield {"event": "token", "data": _GREETING_RESPONSE}
+            yield {"event": "sources", "data": "[]"}
+            yield {"event": "done", "data": "[DONE]"}
+            await _persist_messages(db, session_id, query, _GREETING_RESPONSE, [], assistant_id=assistant_msg_id)
+            return
+
+        # Guard: identity/presentation questions — answer without RAG pipeline
+        if _IDENTITY_PATTERN.match(query):
+            yield {"event": "token", "data": _IDENTITY_RESPONSE}
+            yield {"event": "sources", "data": "[]"}
+            yield {"event": "done", "data": "[DONE]"}
+            await _persist_messages(db, session_id, query, _IDENTITY_RESPONSE, [], assistant_id=assistant_msg_id)
             return
 
         # ------------------------------------------------------------------ #
