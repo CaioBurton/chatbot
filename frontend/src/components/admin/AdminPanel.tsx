@@ -1,10 +1,12 @@
-import { useState } from 'react'
-import { ArrowLeft, LogOut } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ArrowLeft, LogOut, RefreshCw } from 'lucide-react'
 import StatsBar from './StatsBar'
 import UploadZone from './UploadZone'
 import DocumentTable from './DocumentTable'
 import RagParametersPanel from './RagParametersPanel'
 import ReindexControls from './ReindexControls'
+
+const AUTO_REFRESH_INTERVAL_MS = 15_000
 
 interface Props {
   logout: () => void
@@ -14,13 +16,38 @@ interface Props {
 export default function AdminPanel({ logout, onBack }: Props) {
   // Incrementing this key causes stats and table to re-fetch
   const [refreshKey, setRefreshKey] = useState(0)
+  const [lastRefreshed, setLastRefreshed] = useState<Date>(() => new Date())
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const refreshingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const refresh = () => setRefreshKey(k => k + 1)
+  const refresh = useCallback(() => {
+    setIsRefreshing(true)
+    setRefreshKey((k: number) => k + 1)
+    setLastRefreshed(new Date())
+    // Clear the "refreshing" spinner after a short delay
+    if (refreshingTimer.current) clearTimeout(refreshingTimer.current)
+    refreshingTimer.current = setTimeout(() => setIsRefreshing(false), 800)
+  }, [])
+
+  // Auto-refresh every AUTO_REFRESH_INTERVAL_MS
+  useEffect(() => {
+    const id = setInterval(refresh, AUTO_REFRESH_INTERVAL_MS)
+    return () => {
+      clearInterval(id)
+      if (refreshingTimer.current) clearTimeout(refreshingTimer.current)
+    }
+  }, [refresh])
 
   const handleLogout = () => {
     logout()
     onBack()
   }
+
+  const formattedTime = lastRefreshed.toLocaleTimeString('pt-BR', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-white dark:bg-[#1e1e1e] text-[#111] dark:text-[#e8e8e8]">
@@ -37,14 +64,32 @@ export default function AdminPanel({ logout, onBack }: Props) {
           </button>
           <h1 className="text-base font-semibold">Painel de Administração</h1>
         </div>
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="text-sm text-[#777] dark:text-[#aaa] hover:text-red-600 dark:hover:text-red-400 cursor-pointer bg-transparent border-0 flex items-center gap-1 transition-colors"
-        >
-          <LogOut size={14} />
-          Sair
-        </button>
+        <div className="flex items-center gap-4">
+          {/* Last-updated indicator + manual refresh */}
+          <div className="flex items-center gap-2 text-xs text-[#777] dark:text-[#aaa]">
+            <RefreshCw
+              size={12}
+              className={isRefreshing ? 'animate-spin text-[#0078d4]' : ''}
+            />
+            <span>Atualizado às {formattedTime}</span>
+            <button
+              type="button"
+              onClick={refresh}
+              disabled={isRefreshing}
+              className="rounded border border-[#ddd] dark:border-[#444] px-2 py-0.5 hover:bg-[#eee] dark:hover:bg-[#3a3a3a] disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed transition-colors"
+            >
+              Atualizar
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="text-sm text-[#777] dark:text-[#aaa] hover:text-red-600 dark:hover:text-red-400 cursor-pointer bg-transparent border-0 flex items-center gap-1 transition-colors"
+          >
+            <LogOut size={14} />
+            Sair
+          </button>
+        </div>
       </header>
 
       {/* Scrollable content */}

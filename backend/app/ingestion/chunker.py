@@ -52,7 +52,7 @@ def _sync_chunk(
 
     for page in pages:
         page_number: int = page["page_number"]
-        text: str = page["text"]
+        text: str = page["text"].replace("\x00", "")
         if not text.strip():
             continue
 

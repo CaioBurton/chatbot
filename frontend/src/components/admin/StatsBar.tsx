@@ -8,9 +8,11 @@ interface Props {
 export default function StatsBar({ refreshKey }: Props) {
   const [stats, setStats] = useState<DocumentStats | null>(null)
   const [error, setError] = useState(false)
+  const [fetching, setFetching] = useState(false)
 
   useEffect(() => {
     setError(false)
+    setFetching(true)
     authFetch(`${API_BASE}/documents/stats`)
       .then(res => {
         if (!res.ok) throw new Error('stats error')
@@ -18,6 +20,7 @@ export default function StatsBar({ refreshKey }: Props) {
       })
       .then(setStats)
       .catch(() => setError(true))
+      .finally(() => setFetching(false))
   }, [refreshKey])
 
   if (error) {
@@ -39,7 +42,13 @@ export default function StatsBar({ refreshKey }: Props) {
     : []
 
   return (
-    <div className="flex flex-wrap gap-3">
+    <div className="flex flex-wrap gap-3 relative">
+      {/* Subtle overlay spinner on background re-fetches (stats already loaded) */}
+      {fetching && stats !== null && (
+        <span className="absolute right-0 -top-5 text-[10px] text-[#aaa] dark:text-[#666] animate-pulse">
+          atualizando…
+        </span>
+      )}
       {stats === null
         ? Array.from({ length: 5 }).map((_, i) => (
             <div
