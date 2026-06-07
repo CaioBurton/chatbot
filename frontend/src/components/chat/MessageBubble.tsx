@@ -82,24 +82,6 @@ export default function MessageBubble({ message, onFeedback }: Props) {
           </div>
         )}
 
-        {message.sources && message.sources.length > 0 && (
-          <div
-            className={`mt-[0.6rem] pt-[0.5rem] text-[0.78rem] border-t border-solid ${isUser ? 'border-white/[0.15] text-white/[0.85]' : 'border-black/[0.12] dark:border-white/[0.15] text-[#444] dark:text-[#c0c0c0]'}`}
-          >
-            <strong>Fontes:</strong>
-            <ul className="mt-1 mb-0 pl-5">
-              {message.sources.map((s, i) => (
-                <li key={i}>
-                  {s.display_name || s.original_name}
-                  {s.page_number != null ? ` (p. ${s.page_number})` : ''}
-                  {' \u2014 '}
-                  {(s.score * 100).toFixed(0)}%
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
         {!isUser && hasContent && (
           <div className="flex justify-end mt-[0.3rem]">
             <button

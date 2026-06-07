@@ -43,6 +43,15 @@ logger = logging.getLogger(__name__)
 
 _MODEL = "gemma3:12b"
 
+# Serialise all Ollama inference calls to prevent concurrent GPU pressure.
+# gemma3:12b fills most of the 16 GB VRAM on the RTX 5060 Ti; running two or
+# more inferences simultaneously triggers the OOM killer
+# ("llama-server process has terminated: signal: killed").
+# Raise the limit only if a larger GPU is available.
+_OLLAMA_SEMAPHORE = asyncio.Semaphore(1)
+_OLLAMA_MAX_RETRIES = 3
+_OLLAMA_RETRY_BASE_DELAY = 5.0  # seconds; multiplied by attempt index
+
 _FALLBACK_MESSAGE = (
     "Não possuo informações sobre este assunto em minha base de documentos. "
     "Para esclarecimentos adicionais, entre em contato diretamente com a PROPESQI."
@@ -98,8 +107,7 @@ REGRAS OBRIGATÓRIAS:
    "Não possuo informações sobre este assunto em minha base de documentos.
     Para esclarecimentos adicionais, entre em contato diretamente com a PROPESQI."
 3. Nunca invente datas, normas, nomes ou valores.
-4. Ao final de cada resposta, cite as fontes utilizadas (nome do documento e página).
-5. Mantenha tom institucional, respeitoso e acessível ao público universitário.
+4. Mantenha tom institucional, respeitoso e acessível ao público universitário.
 
 CONTEXTO DOS DOCUMENTOS:
 {context}
@@ -124,21 +132,51 @@ def _log_stage_duration(session_id: UUID, stage: str, start_time: float) -> None
 # ---------------------------------------------------------------------------
 
 async def _ollama_generate(prompt: str, temperature: float, settings) -> str:
-    """Call Ollama /api/chat (non-streaming) and return the response text."""
-    async with httpx.AsyncClient(timeout=300.0) as http:
-        resp = await http.post(
-            f"{settings.OLLAMA_BASE_URL}/api/chat",
-            json={
-                "model": _MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "options": {"temperature": temperature},
-            },
-        )
-        if resp.status_code >= 400:
-            logger.error("_ollama_generate: HTTP %s — body: %s", resp.status_code, resp.text[:500])
-        resp.raise_for_status()
-        return resp.json().get("message", {}).get("content", "").strip()
+    """Call Ollama /api/chat (non-streaming) and return the response text.
+
+    Acquires _OLLAMA_SEMAPHORE before each attempt to prevent concurrent GPU
+    inference.  Retries on HTTP 500 (llama-server killed / OOM recovery) with
+    linear back-off up to _OLLAMA_MAX_RETRIES attempts.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_OLLAMA_MAX_RETRIES):
+        if attempt > 0:
+            delay = _OLLAMA_RETRY_BASE_DELAY * attempt
+            logger.info(
+                "_ollama_generate: waiting %.1fs before retry %d/%d",
+                delay, attempt + 1, _OLLAMA_MAX_RETRIES,
+            )
+            await asyncio.sleep(delay)
+        async with _OLLAMA_SEMAPHORE:
+            async with httpx.AsyncClient(timeout=300.0) as http:
+                resp = await http.post(
+                    f"{settings.OLLAMA_BASE_URL}/api/chat",
+                    json={
+                        "model": _MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                        "options": {"temperature": temperature},
+                    },
+                )
+                if resp.status_code == 500:
+                    logger.warning(
+                        "_ollama_generate: HTTP 500 on attempt %d/%d — body: %s",
+                        attempt + 1, _OLLAMA_MAX_RETRIES, resp.text[:200],
+                    )
+                    last_exc = httpx.HTTPStatusError(
+                        message="Server error '500 Internal Server Error'",
+                        request=resp.request,
+                        response=resp,
+                    )
+                    continue
+                if resp.status_code >= 400:
+                    logger.error(
+                        "_ollama_generate: HTTP %s — body: %s",
+                        resp.status_code, resp.text[:500],
+                    )
+                resp.raise_for_status()
+                return resp.json().get("message", {}).get("content", "").strip()
+    raise last_exc  # type: ignore[misc]
 
 
 def _build_context(parents: list[dict]) -> str:
@@ -496,31 +534,32 @@ async def rag_stream(
         # 8. LLM streaming                                                    #
         # ------------------------------------------------------------------ #
         stage_start = time.perf_counter()
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as http:
-            async with http.stream(
-                "POST",
-                f"{settings.OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": _MODEL,
-                    "messages": messages,
-                    "stream": True,
-                    "options": {"temperature": 0.1, "num_predict": 1024},
-                },
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    try:
-                        chunk = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    token: str = chunk.get("message", {}).get("content", "")
-                    if token:
-                        response_parts.append(token)
-                        yield {"event": "token", "data": token}
-                    if chunk.get("done"):
-                        break
+        async with _OLLAMA_SEMAPHORE:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as http:
+                async with http.stream(
+                    "POST",
+                    f"{settings.OLLAMA_BASE_URL}/api/chat",
+                    json={
+                        "model": _MODEL,
+                        "messages": messages,
+                        "stream": True,
+                        "options": {"temperature": 0.1, "num_predict": 1024},
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            chunk = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        token: str = chunk.get("message", {}).get("content", "")
+                        if token:
+                            response_parts.append(token)
+                            yield {"event": "token", "data": token}
+                        if chunk.get("done"):
+                            break
         _log_stage_duration(session_id, "llm_streaming", stage_start)
 
         # ------------------------------------------------------------------ #

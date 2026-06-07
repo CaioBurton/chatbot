@@ -1,6 +1,7 @@
-# PROPESQI RAG Chatbot — Base Docker Compose
-# Usage (CPU):  docker compose up -d
-# Usage (GPU):  docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# PROPESQI RAG Chatbot — Docker Compose (GPU mode — NVIDIA RTX 5060 Ti 16 GB)
+# Prerequisites: nvidia-container-toolkit installed and Docker daemon configured
+#   with "default-runtime": "nvidia" (or the deploy block below handles it).
+# Usage: docker compose up -d
 
 services:
 
@@ -73,8 +74,8 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Ollama — local LLM + embedding server
-  # Base compose: CPU-only.  GPU override: docker-compose.gpu.yml
+  # Ollama — local LLM + embedding server (GPU mode)
+  # bge-m3 ~1.1 GiB + gemma3:12b Q4_K_M ~7.7 GiB = ~8.8 GiB, well within 16 GiB VRAM.
   # Port 11434 is internal only.
   # ---------------------------------------------------------------------------
   ollama:
@@ -82,6 +83,20 @@ services:
     ports:
       - "11434:11434"
     container_name: propesqi_ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Set to 2 so both models stay loaded simultaneously (no reload delay between calls).
+      - OLLAMA_MAX_LOADED_MODELS=2
+      # Serialise inference requests so concurrent calls don't thrash the GPU.
+      - OLLAMA_NUM_PARALLEL=1
     volumes:
       - ollama_data:/root/.ollama
     networks:
