@@ -29,14 +29,18 @@ export function useSessions() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  // Refresh summaries whenever the list of known session IDs changes
-  useEffect(() => {
+  const refreshSummaries = useCallback(() => {
     if (sessionIds.length === 0) {
       setSummaries([])
       return
     }
     getSessionSummaries(sessionIds).then(setSummaries).catch(console.error)
   }, [sessionIds])
+
+  // Refresh summaries whenever the list of known session IDs changes
+  useEffect(() => {
+    refreshSummaries()
+  }, [refreshSummaries])
 
   const addSession = useCallback((id: string) => {
     if (!UUID_RE.test(id)) return
@@ -85,5 +89,6 @@ export function useSessions() {
     switchSession,
     removeSession,
     setCurrentSessionId,
+    refreshSummaries,
   }
 }

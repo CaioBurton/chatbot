@@ -61,7 +61,10 @@ export default function App() {
 
   const handleSend = (text: string) => {
     if (!sessions.currentSessionId) return
-    chat.sendMessage(text, sessions.currentSessionId).catch(console.error)
+    chat
+      .sendMessage(text, sessions.currentSessionId)
+      .then(() => sessions.refreshSummaries())
+      .catch(console.error)
   }
 
   const handleNewSession = () => {

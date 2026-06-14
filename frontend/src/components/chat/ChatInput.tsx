@@ -1,5 +1,5 @@
 import { useState, KeyboardEvent } from 'react'
-import { Send, Square, Plus } from 'lucide-react'
+import { Send, Square } from 'lucide-react'
 
 interface Props {
   onSend: (text: string) => void
@@ -39,15 +39,7 @@ export default function ChatInput({ onSend, disabled, onStop }: Props) {
             className="w-full resize-none px-4 pt-4 pb-2 rounded-2xl text-[0.9rem] min-h-[52px] max-h-40 overflow-y-auto leading-[1.6] bg-transparent text-[#111] dark:text-[#e8e8e8] placeholder-[#aaa] dark:placeholder-[#666] outline-none border-none"
           />
           {/* Bottom action bar */}
-          <div className="flex items-center justify-between px-3 pb-3 pt-1">
-            <button
-              type="button"
-              className="w-8 h-8 flex items-center justify-center rounded-full text-[#888] dark:text-[#aaa] hover:bg-[#f0f0f0] dark:hover:bg-[#3a3a3a] transition-colors"
-              title="Anexar arquivo"
-            >
-              <Plus size={18} />
-            </button>
-
+          <div className="flex items-center justify-end px-3 pb-3 pt-1">
             {disabled ? (
               <button
                 type="button"

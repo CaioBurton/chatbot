@@ -11,6 +11,8 @@ import {
 } from 'lucide-react'
 import { SessionSummary } from '../../lib/api'
 import { useTheme } from '../../hooks/useTheme'
+import propesqiLogo from '../../images/propesqi_perfil azul 2.png'
+import propesqiLogoHorizontal from '../../images/propesqi_horizontal azul.png'
 
 const COLLAPSE_KEY = 'propesqi_sidebar_collapsed'
 
@@ -56,6 +58,7 @@ export default function Sidebar({
 }: Props) {
   const [collapsed, setCollapsed] = useState<boolean>(loadCollapsed)
   const { theme, toggleTheme } = useTheme()
+  const visibleSummaries = summaries.filter(s => s.preview !== null)
 
   const toggleCollapsed = () => {
     setCollapsed(prev => {
@@ -73,6 +76,7 @@ export default function Sidebar({
     return (
       <aside className="w-12 border-r border-[#ddd] dark:border-[#444] flex flex-col items-center bg-[#fafafa] dark:bg-[#2d2d2d] shrink-0 transition-all duration-200">
         <div className="py-2 flex flex-col items-center gap-2 w-full">
+          <img src={propesqiLogo} alt="PROPESQI" className="w-8 h-8 rounded-full" />
           <button
             type="button"
             onClick={onNewSession}
@@ -106,10 +110,7 @@ export default function Sidebar({
   return (
     <aside className="w-[260px] min-w-[200px] max-w-[320px] border-r border-[#ddd] dark:border-[#444] flex flex-col bg-[#fafafa] dark:bg-[#2d2d2d] shrink-0 transition-all duration-200">
       <div className="p-4 border-b border-[#ddd] dark:border-[#444]">
-        <div className="flex justify-between items-center mb-3">
-          <h2 className="m-0 text-base font-semibold text-[#111] dark:text-[#e8e8e8]">
-            PROPESQI
-          </h2>
+        <div className="flex justify-end mb-1">
           <button
             type="button"
             onClick={toggleTheme}
@@ -118,6 +119,13 @@ export default function Sidebar({
           >
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </button>
+        </div>
+        <div className="dark:bg-white rounded-md px-3 py-2 mx-auto w-fit mb-3">
+          <img
+            src={propesqiLogoHorizontal}
+            alt="PROPESQI - Pró-Reitoria de Pesquisa e Inovação"
+            className="h-14 w-auto block"
+          />
         </div>
         <button
           type="button"
@@ -138,12 +146,12 @@ export default function Sidebar({
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
-        {summaries.length === 0 && (
+        {visibleSummaries.length === 0 && (
           <p className="p-2 opacity-50 text-[0.85rem] m-0 text-[#111] dark:text-[#e8e8e8]">
             Sem conversas anteriores.
           </p>
         )}
-        {summaries.map(s => (
+        {visibleSummaries.map(s => (
           <div
             key={s.session_id}
             className={`group flex items-center rounded-lg mb-1 animate-slide-in-left ${
@@ -160,7 +168,7 @@ export default function Sidebar({
               <MessageSquare size={14} className="mt-0.5 shrink-0 opacity-50" />
               <div className="min-w-0">
                 <div className="text-[0.85rem] font-medium overflow-hidden text-ellipsis whitespace-nowrap">
-                  {s.preview ?? '(sem mensagens)'}
+                  {s.preview}
                 </div>
                 <div className="text-[0.75rem] opacity-[0.55] mt-[0.2rem]">
                   {formatDate(s.last_activity)}

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { Lock, Loader2, ArrowLeft } from 'lucide-react'
+import propesqiLogo from '../../images/propesqi_horizontal azul.png'
 
 interface Props {
   login: (email: string, password: string) => Promise<void>
@@ -34,8 +35,11 @@ export default function LoginPage({ login, onSuccess, onBackToChat }: Props) {
 
   return (
     <div className="flex h-screen items-center justify-center bg-white dark:bg-[#1e1e1e]">
-      <div className="w-full max-w-sm rounded-xl border border-[#ddd] dark:border-[#444] bg-[#fafafa] dark:bg-[#2d2d2d] p-8 shadow-sm">
-        <h1 className="mb-6 text-xl font-semibold text-[#111] dark:text-[#e8e8e8] flex items-center gap-2">
+      <div className="w-full max-w-sm rounded-2xl border border-[#ddd] dark:border-[#444] bg-[#fafafa] dark:bg-[#2d2d2d] p-8 shadow-xl">
+        <div className="dark:bg-white rounded-md px-3 py-2 mx-auto mb-6 w-fit">
+          <img src={propesqiLogo} alt="PROPESQI - Pró-Reitoria de Pesquisa e Inovação" className="h-14 w-auto block" />
+        </div>
+        <h1 className="mb-6 text-xl font-semibold text-[#111] dark:text-[#e8e8e8] flex items-center justify-center gap-2">
           <Lock size={18} className="text-[#0078d4]" />
           Painel de Administração
         </h1>
@@ -99,10 +103,10 @@ export default function LoginPage({ login, onSuccess, onBackToChat }: Props) {
         <button
           type="button"
           onClick={onBackToChat}
-          className="mt-4 inline-flex items-center justify-center gap-1 rounded-lg border border-[#ddd] dark:border-[#555] px-2 py-1 text-xs text-[#333] dark:text-[#ddd] hover:bg-[#f3f3f3] dark:hover:bg-[#3a3a3a] transition-colors"
+          className="mt-4 w-full inline-flex items-center justify-center gap-1 text-sm text-[#0078d4] hover:underline cursor-pointer bg-transparent border-0 p-0"
         >
-          <ArrowLeft size={12} />
-          Voltar
+          <ArrowLeft size={14} />
+          Voltar ao chat
         </button>
       </div>
     </div>

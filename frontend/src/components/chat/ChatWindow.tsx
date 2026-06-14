@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { DisplayMessage } from '../../hooks/useChat'
 import MessageBubble from './MessageBubble'
 import ChatInput from './ChatInput'
+import WelcomeScreen from './WelcomeScreen'
 
 interface Props {
   messages: DisplayMessage[]
@@ -20,11 +21,7 @@ export default function ChatWindow({ messages, streaming, onSend, onStop }: Prop
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-[#fafafa] dark:bg-[#1e1e1e]">
       <div className="flex-1 overflow-y-auto p-4 flex flex-col">
-        {messages.length === 0 && (
-          <div className="m-auto text-center opacity-[0.45] text-[0.95rem] text-[#111] dark:text-[#e8e8e8]">
-            <p>Envie uma mensagem para começar.</p>
-          </div>
-        )}
+        {messages.length === 0 && <WelcomeScreen onSend={onSend} />}
         {messages.map(m => (
           <MessageBubble key={m.id} message={m} />
         ))}
