@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     CONTEXTUAL_COMPRESSION_ENABLED: bool = True
     CONTEXTUAL_COMPRESSION_TEMPERATURE: float = Field(0.1, ge=0.0, le=1.0)
 
+    # Proprietary LLM API keys (optional — only required when llm_provider != 'local')
+    OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
+    GOOGLE_API_KEY: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     def allowed_origins_list(self) -> list[str]:

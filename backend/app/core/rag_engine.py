@@ -41,7 +41,7 @@ from qdrant_client.models import ScoredPoint
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "gemma3:12b"
+_LOCAL_MODEL = "gemma3:12b"
 
 # Serialise all Ollama inference calls to prevent concurrent GPU pressure.
 # gemma3:12b fills most of the 16 GB VRAM on the RTX 5060 Ti; running two or
@@ -152,7 +152,7 @@ async def _ollama_generate(prompt: str, temperature: float, settings) -> str:
                 resp = await http.post(
                     f"{settings.OLLAMA_BASE_URL}/api/chat",
                     json={
-                        "model": _MODEL,
+                        "model": _LOCAL_MODEL,
                         "messages": [{"role": "user", "content": prompt}],
                         "stream": False,
                         "options": {"temperature": temperature},
@@ -177,6 +177,68 @@ async def _ollama_generate(prompt: str, temperature: float, settings) -> str:
                 resp.raise_for_status()
                 return resp.json().get("message", {}).get("content", "").strip()
     raise last_exc  # type: ignore[misc]
+
+
+async def _openai_generate(prompt: str, temperature: float, settings, model: str) -> str:
+    """Call OpenAI Chat Completions API (non-streaming)."""
+    async with httpx.AsyncClient(timeout=300.0) as http:
+        resp = await http.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {settings.OPENAI_API_KEY}"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+async def _anthropic_generate(prompt: str, temperature: float, settings, model: str) -> str:
+    """Call Anthropic Messages API (non-streaming)."""
+    async with httpx.AsyncClient(timeout=300.0) as http:
+        resp = await http.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": settings.ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": model,
+                "max_tokens": 1024,
+                "temperature": temperature,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()["content"][0]["text"].strip()
+
+
+async def _gemini_generate(prompt: str, temperature: float, settings, model: str) -> str:
+    """Call Google Gemini generateContent API (non-streaming)."""
+    async with httpx.AsyncClient(timeout=300.0) as http:
+        resp = await http.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            params={"key": settings.GOOGLE_API_KEY},
+            json={
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": temperature, "maxOutputTokens": 1024},
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+async def _llm_generate(prompt: str, temperature: float, settings, provider: str, model: str) -> str:
+    """Provider-agnostic non-streaming LLM call."""
+    if provider == "openai":
+        return await _openai_generate(prompt, temperature, settings, model)
+    if provider == "anthropic":
+        return await _anthropic_generate(prompt, temperature, settings, model)
+    if provider == "gemini":
+        return await _gemini_generate(prompt, temperature, settings, model)
+    return await _ollama_generate(prompt, temperature, settings)
 
 
 def _build_context(parents: list[dict]) -> str:
@@ -211,6 +273,8 @@ async def _compress_context(
     query: str,
     parents: list[dict],
     settings,
+    provider: str = "local",
+    model: str = "gemma3:12b",
 ) -> list[dict]:
     """
     Contextual Compression (PLANEJAMENTO.md §5.3).
@@ -248,10 +312,12 @@ async def _compress_context(
             query=query_for_prompt,
             text=original_text,
         )
-        compressed = await _ollama_generate(
+        compressed = await _llm_generate(
             prompt,
             temperature=settings.CONTEXTUAL_COMPRESSION_TEMPERATURE,
             settings=settings,
+            provider=provider,
+            model=model,
         )
         # Sanity check: output longer than 1.5× the original signals the LLM
         # added explanatory text or was prompt-injected — discard and fall back.
@@ -366,6 +432,10 @@ async def rag_stream(
     """
     settings = get_settings()
     rag_cfg = await get_rag_config(db)
+    llm_provider: str = getattr(rag_cfg, "llm_provider", "local") or "local"
+    llm_model: str = getattr(rag_cfg, "llm_model", _LOCAL_MODEL) or _LOCAL_MODEL
+    embedding_provider: str = getattr(rag_cfg, "embedding_provider", "local") or "local"
+    embedding_model: str = getattr(rag_cfg, "embedding_model", "bge-m3") or "bge-m3"
     response_parts: list[str] = []
     reranked_parents: list[dict] = []
     pipeline_start = time.perf_counter()
@@ -423,30 +493,41 @@ async def rag_stream(
             f"Responda apenas com as {settings.MULTIQUERY_COUNT} reformulações, uma por linha, sem numeração.\n\n"
             f"Pergunta original: {query}"
         )
-        # Both LLM calls are independent — run concurrently to reduce latency.
-        # return_exceptions=True allows graceful degradation: if one call fails,
-        # the pipeline continues with whichever results are still valid.
         stage_start = time.perf_counter()
-        _llm_results = await asyncio.gather(
-            _ollama_generate(hyde_prompt, temperature=settings.HYDE_TEMPERATURE, settings=settings),
-            _ollama_generate(reform_prompt, temperature=settings.MULTIQUERY_TEMPERATURE, settings=settings),
-            return_exceptions=True,
-        )
+        _tasks: list = []
+        if rag_cfg.hyde_enabled:
+            _tasks.append(_llm_generate(hyde_prompt, temperature=settings.HYDE_TEMPERATURE, settings=settings, provider=llm_provider, model=llm_model))
+        if rag_cfg.multiquery_enabled:
+            _tasks.append(_llm_generate(reform_prompt, temperature=settings.MULTIQUERY_TEMPERATURE, settings=settings, provider=llm_provider, model=llm_model))
+
+        _llm_results = await asyncio.gather(*_tasks, return_exceptions=True) if _tasks else []
         _log_stage_duration(session_id, "query_expansion", stage_start)
-        hyde_answer = _llm_results[0] if isinstance(_llm_results[0], str) else ""
-        reform_text = _llm_results[1] if isinstance(_llm_results[1], str) else ""
-        if not isinstance(_llm_results[0], str):
-            logger.warning("rag_stream: HyDE LLM call failed — skipping: %s", _llm_results[0])
-        if not isinstance(_llm_results[1], str):
-            logger.warning("rag_stream: multi-query LLM call failed — skipping reformulations: %s", _llm_results[1])
-        extra_queries = [
-            line.strip()
-            for line in reform_text.splitlines()
-            if line.strip()
-        ][:settings.MULTIQUERY_COUNT]
+
+        _result_idx = 0
+        hyde_answer = ""
+        if rag_cfg.hyde_enabled:
+            _r = _llm_results[_result_idx] if _result_idx < len(_llm_results) else None
+            if isinstance(_r, str):
+                hyde_answer = _r
+            else:
+                logger.warning("rag_stream: HyDE LLM call failed — skipping: %s", _r)
+            _result_idx += 1
+
+        extra_queries: list[str] = []
+        if rag_cfg.multiquery_enabled:
+            _r = _llm_results[_result_idx] if _result_idx < len(_llm_results) else None
+            if isinstance(_r, str):
+                extra_queries = [
+                    line.strip() for line in _r.splitlines() if line.strip()
+                ][:settings.MULTIQUERY_COUNT]
+            else:
+                logger.warning("rag_stream: multi-query LLM call failed — skipping reformulations: %s", _r)
 
         # Original query included in union set (PLANEJAMENTO.md §4.2 step 3)
-        all_queries = [query, hyde_answer] + extra_queries  # original + HyDE + reformulations
+        all_queries = [query]
+        if hyde_answer:
+            all_queries.append(hyde_answer)
+        all_queries.extend(extra_queries)
 
         # Union + dedup across all queries (keep highest score per point ID)
         stage_start = time.perf_counter()
@@ -458,6 +539,8 @@ async def rag_stream(
                 q,
                 top_k=rag_cfg.search_top_k,
                 score_threshold=rag_cfg.search_score_threshold,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
             )
             for pt in pts:
                 pid = str(pt.id)
@@ -472,12 +555,16 @@ async def rag_stream(
         # 4. Reranking                                                        #
         # ------------------------------------------------------------------ #
         stage_start = time.perf_counter()
-        reranked = await rerank(
-            query,
-            merged_points,
-            top_k=rag_cfg.reranker_top_k,
-            score_threshold=rag_cfg.reranker_score_threshold,
-        )
+        if rag_cfg.reranker_enabled:
+            reranked = await rerank(
+                query,
+                merged_points,
+                top_k=rag_cfg.reranker_top_k,
+                score_threshold=rag_cfg.reranker_score_threshold,
+            )
+        else:
+            # Skip reranker: sort by vector search score and take top_k
+            reranked = sorted(merged_points, key=lambda p: p.score, reverse=True)[:rag_cfg.reranker_top_k]
         _log_stage_duration(session_id, "reranking", stage_start)
 
         # ------------------------------------------------------------------ #
@@ -494,7 +581,13 @@ async def rag_stream(
         # 6. Context assembly                                                 #
         # ------------------------------------------------------------------ #
         stage_start = time.perf_counter()
-        reranked_parents = expand_to_parents(reranked)[:5]
+        if rag_cfg.parent_child_expansion_enabled:
+            reranked_parents = expand_to_parents(reranked)[:5]
+        else:
+            reranked_parents = [
+                {**(pt.payload or {}), "score": pt.score}
+                for pt in reranked[:5]
+            ]
 
         history_result = await db.execute(
             select(ChatMessage)
@@ -508,9 +601,9 @@ async def rag_stream(
         # ------------------------------------------------------------------ #
         # 6b. Contextual Compression                                         #
         # ------------------------------------------------------------------ #
-        if settings.CONTEXTUAL_COMPRESSION_ENABLED:
+        if rag_cfg.contextual_compression_enabled:
             stage_start = time.perf_counter()
-            reranked_parents = await _compress_context(query, reranked_parents, settings)
+            reranked_parents = await _compress_context(query, reranked_parents, settings, provider=llm_provider, model=llm_model)
             _log_stage_duration(session_id, "contextual_compression", stage_start)
 
         # ------------------------------------------------------------------ #
@@ -534,32 +627,147 @@ async def rag_stream(
         # 8. LLM streaming                                                    #
         # ------------------------------------------------------------------ #
         stage_start = time.perf_counter()
-        async with _OLLAMA_SEMAPHORE:
+        if llm_provider == "openai":
             async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as http:
                 async with http.stream(
                     "POST",
-                    f"{settings.OLLAMA_BASE_URL}/api/chat",
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.OPENAI_API_KEY}"},
                     json={
-                        "model": _MODEL,
+                        "model": llm_model,
                         "messages": messages,
                         "stream": True,
-                        "options": {"temperature": 0.1, "num_predict": 1024},
+                        "temperature": 0.1,
+                        "max_tokens": 1024,
                     },
                 ) as resp:
                     resp.raise_for_status()
                     async for line in resp.aiter_lines():
-                        if not line:
+                        if not line or not line.startswith("data: "):
                             continue
+                        payload = line[len("data: "):].strip()
+                        if payload == "[DONE]":
+                            break
                         try:
-                            chunk = json.loads(line)
+                            chunk = json.loads(payload)
                         except json.JSONDecodeError:
                             continue
-                        token: str = chunk.get("message", {}).get("content", "")
+                        token: str = chunk.get("choices", [{}])[0].get("delta", {}).get("content") or ""
                         if token:
                             response_parts.append(token)
                             yield {"event": "token", "data": token}
-                        if chunk.get("done"):
+        elif llm_provider == "anthropic":
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as http:
+                # Anthropic uses a separate system parameter
+                anthropic_system = ""
+                anthropic_messages = []
+                for m in messages:
+                    if m["role"] == "system":
+                        anthropic_system = m["content"]
+                    else:
+                        anthropic_messages.append(m)
+                async with http.stream(
+                    "POST",
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": settings.ANTHROPIC_API_KEY,
+                        "anthropic-version": "2023-06-01",
+                    },
+                    json={
+                        "model": llm_model,
+                        "system": anthropic_system,
+                        "messages": anthropic_messages,
+                        "stream": True,
+                        "max_tokens": 1024,
+                        "temperature": 0.1,
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        payload = line[len("data: "):].strip()
+                        try:
+                            chunk = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+                        if chunk.get("type") == "content_block_delta":
+                            token = chunk.get("delta", {}).get("text") or ""
+                            if token:
+                                response_parts.append(token)
+                                yield {"event": "token", "data": token}
+                        elif chunk.get("type") == "message_stop":
                             break
+        elif llm_provider == "gemini":
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as http:
+                # Gemini uses a flat contents array; map system prompt as first user turn
+                gemini_contents = []
+                system_text = ""
+                for m in messages:
+                    if m["role"] == "system":
+                        system_text = m["content"]
+                    elif m["role"] == "user":
+                        text = (system_text + "\n\n" + m["content"]) if system_text else m["content"]
+                        gemini_contents.append({"role": "user", "parts": [{"text": text}]})
+                        system_text = ""
+                    else:
+                        gemini_contents.append({"role": "model", "parts": [{"text": m["content"]}]})
+                async with http.stream(
+                    "POST",
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{llm_model}:streamGenerateContent",
+                    params={"key": settings.GOOGLE_API_KEY, "alt": "sse"},
+                    json={
+                        "contents": gemini_contents,
+                        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024},
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        payload = line[len("data: "):].strip()
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+                        token = (
+                            chunk.get("candidates", [{}])[0]
+                            .get("content", {})
+                            .get("parts", [{}])[0]
+                            .get("text", "")
+                        )
+                        if token:
+                            response_parts.append(token)
+                            yield {"event": "token", "data": token}
+        else:
+            async with _OLLAMA_SEMAPHORE:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as http:
+                    async with http.stream(
+                        "POST",
+                        f"{settings.OLLAMA_BASE_URL}/api/chat",
+                        json={
+                            "model": llm_model,
+                            "messages": messages,
+                            "stream": True,
+                            "options": {"temperature": 0.1, "num_predict": 1024},
+                        },
+                    ) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            try:
+                                chunk = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            token = chunk.get("message", {}).get("content", "")
+                            if token:
+                                response_parts.append(token)
+                                yield {"event": "token", "data": token}
+                            if chunk.get("done"):
+                                break
         _log_stage_duration(session_id, "llm_streaming", stage_start)
 
         # ------------------------------------------------------------------ #

@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from app.core.config import get_settings
-from app.core.rag_engine import _MODEL, _ollama_generate
+from app.core.rag_engine import _LOCAL_MODEL, _ollama_generate
 from app.db.reranker import rerank
 from app.db.search import expand_to_parents, hybrid_search
 from app.schemas.evaluation import EvaluationSample
@@ -242,7 +242,7 @@ async def run_ragas_evaluation(
     # 3. Configure RAGAS to use local Ollama LLM + embeddings             #
     # ------------------------------------------------------------------ #
     ollama_base = settings.OLLAMA_BASE_URL  # e.g. http://ollama:11434
-    langchain_llm = ChatOllama(base_url=ollama_base, model=_MODEL, temperature=0.0)
+    langchain_llm = ChatOllama(base_url=ollama_base, model=_LOCAL_MODEL, temperature=0.0)
     langchain_embeddings = OllamaEmbeddings(base_url=ollama_base, model="bge-m3")
 
     ragas_llm = LangchainLLMWrapper(langchain_llm)

@@ -19,6 +19,15 @@ async def get_rag_config(db: AsyncSession) -> RagConfig:
             search_score_threshold=0.0,
             reranker_top_k=5,
             reranker_score_threshold=0.5,
+            hyde_enabled=True,
+            multiquery_enabled=True,
+            reranker_enabled=True,
+            contextual_compression_enabled=True,
+            parent_child_expansion_enabled=True,
+            llm_provider="local",
+            llm_model="gemma3:12b",
+            embedding_provider="local",
+            embedding_model="bge-m3",
             updated_at=datetime.now(timezone.utc),
         )
         db.add(cfg)

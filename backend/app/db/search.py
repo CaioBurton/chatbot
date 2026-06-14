@@ -2,8 +2,9 @@
 db/search.py — Hybrid dense+sparse search using Qdrant RRF fusion.
 
 New file. Implements hybrid_search() as a pure DB-layer function (no HTTP endpoints here).
-Dense embedding via Ollama bge-m3; sparse via BM42 (app.ingestion.sparse). Both prefetch
-lists are fused with Reciprocal Rank Fusion (RRF) inside Qdrant. Top-K defaults to 20.
+Dense embedding via app.core.embeddings (local Ollama bge-m3 or Gemini); sparse via BM42
+(app.ingestion.sparse). Both prefetch lists are fused with Reciprocal Rank Fusion (RRF)
+inside Qdrant. Top-K defaults to 20.
 Returns raw ScoredPoint list; callers are responsible for formatting.
 
 Note: the `payload_filter` parameter is named to avoid shadowing the Python built-in `filter`.
@@ -11,10 +12,10 @@ Note: the `payload_filter` parameter is named to avoid shadowing the Python buil
 
 from typing import Optional
 
-import httpx
 from qdrant_client.models import Filter, Fusion, FusionQuery, Prefetch, ScoredPoint
 
 from app.core.config import get_settings
+from app.core.embeddings import generate_dense_embeddings
 from app.db.qdrant import COLLECTION_NAME, DENSE_VECTOR_NAME, SPARSE_VECTOR_NAME, get_qdrant_client
 from app.ingestion.sparse import encode_sparse
 
@@ -24,6 +25,8 @@ async def hybrid_search(
     top_k: int = 20,
     score_threshold: float = 0.0,
     payload_filter: Optional[Filter] = None,
+    embedding_provider: str = "local",
+    embedding_model: str = "bge-m3",
 ) -> list[ScoredPoint]:
     """
     Perform a hybrid dense+sparse search with RRF fusion.
@@ -33,6 +36,8 @@ async def hybrid_search(
         top_k: Maximum number of results to return (1–100).
         score_threshold: Minimum score; 0.0 means no filtering.
         payload_filter: Optional Qdrant payload filter to apply.
+        embedding_provider: Dense embedding provider ("local" or "gemini").
+        embedding_model: Dense embedding model name.
 
     Returns:
         List of ScoredPoint objects ordered by RRF score (descending).
@@ -40,22 +45,10 @@ async def hybrid_search(
     settings = get_settings()
 
     # ------------------------------------------------------------------ #
-    # 1. Dense embedding via Ollama bge-m3                                #
+    # 1. Dense embedding                                                  #
     # ------------------------------------------------------------------ #
-    async with httpx.AsyncClient() as http_client:
-        response = await http_client.post(
-            f"{settings.OLLAMA_BASE_URL}/api/embed",
-            json={"model": "bge-m3", "input": [query]},
-            timeout=60.0,
-        )
-        response.raise_for_status()
-        data = response.json()
-        try:
-            dense_vector: list[float] = data["embeddings"][0]
-        except (KeyError, IndexError) as exc:
-            raise RuntimeError(
-                f"Unexpected Ollama /api/embed response structure: {data}"
-            ) from exc
+    dense_vectors = await generate_dense_embeddings([query], embedding_provider, embedding_model, settings)
+    dense_vector = dense_vectors[0]
 
     # ------------------------------------------------------------------ #
     # 2. Sparse embedding via BM42                                        #

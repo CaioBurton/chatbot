@@ -135,6 +135,10 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
       # Must match QDRANT__SERVICE__API_KEY set on the qdrant service
       QDRANT_API_KEY: ${QDRANT_API_KEY}
+      # Proprietary LLM API keys (optional — only required when llm_provider != 'local')
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
     volumes:
       # Persistent storage for uploaded documents — survives container restarts
       - uploads_data:/app/uploads

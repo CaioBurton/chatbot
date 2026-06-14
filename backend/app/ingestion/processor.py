@@ -8,12 +8,12 @@ import logging
 import uuid
 from typing import Any
 
-import httpx
 from qdrant_client.models import PointStruct
 from sqlalchemy import text, update
 
 from app.core.config import get_settings
 from app.core.document_names import resolve_document_display_name
+from app.core.embeddings import generate_dense_embeddings
 from app.core.progress import publish
 from app.db.postgres import AsyncSessionLocal
 from app.db.qdrant import COLLECTION_NAME, DENSE_VECTOR_NAME, SPARSE_VECTOR_NAME, get_qdrant_client
@@ -40,19 +40,13 @@ async def _safe_publish(doc_id: str, event: dict) -> None:
 
 
 async def _embed_batch(
-    client: httpx.AsyncClient, texts: list[str]
+    texts: list[str], embedding_provider: str, embedding_model: str
 ) -> list[list[float]]:
     """
-    Call Ollama /api/embed (batch endpoint) for a list of texts.
+    Generate dense embeddings for a list of texts via the configured provider.
     Returns a list of dense float vectors, one per input text.
     """
-    response = await client.post(
-        f"{settings.OLLAMA_BASE_URL}/api/embed",
-        json={"model": "bge-m3", "input": texts},
-        timeout=300.0,
-    )
-    response.raise_for_status()
-    return response.json()["embeddings"]
+    return await generate_dense_embeddings(texts, embedding_provider, embedding_model, settings)
 
 
 async def process_document(
@@ -146,24 +140,23 @@ async def process_document(
                 return
 
             # ------------------------------------------------------------------ #
-            # 4. Embed via Ollama (batched)
+            # 4. Embed (batched)
             # ------------------------------------------------------------------ #
             texts = [c["text"] for c in chunks]
             total_texts = len(texts)
             embeddings: list[list[float]] = []
 
-            async with httpx.AsyncClient() as http_client:
-                for i in range(0, total_texts, _EMBED_BATCH_SIZE):
-                    batch = texts[i : i + _EMBED_BATCH_SIZE]
-                    batch_embeddings = await _embed_batch(http_client, batch)
-                    embeddings.extend(batch_embeddings)
-                    batch_end = i + len(batch)
-                    embed_progress = 50 + round((batch_end / total_texts) * 30)
-                    await _safe_publish(document_id, {
-                        "step": "embedding",
-                        "detail": f"Gerando embeddings ({batch_end}/{total_texts} textos)...",
-                        "progress": embed_progress,
-                    })
+            for i in range(0, total_texts, _EMBED_BATCH_SIZE):
+                batch = texts[i : i + _EMBED_BATCH_SIZE]
+                batch_embeddings = await _embed_batch(batch, rag_cfg.embedding_provider, rag_cfg.embedding_model)
+                embeddings.extend(batch_embeddings)
+                batch_end = i + len(batch)
+                embed_progress = 50 + round((batch_end / total_texts) * 30)
+                await _safe_publish(document_id, {
+                    "step": "embedding",
+                    "detail": f"Gerando embeddings ({batch_end}/{total_texts} textos)...",
+                    "progress": embed_progress,
+                })
 
             sparse_vectors = await encode_sparse(texts)
 

@@ -170,21 +170,47 @@ CREATE INDEX IF NOT EXISTS idx_rag_evaluations_created_at
 -- Single-row table (id must always equal 1) for runtime-adjustable RAG params.
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS rag_config (
-    id                      INT         PRIMARY KEY DEFAULT 1,
-    parent_chunk_tokens     INT         NOT NULL DEFAULT 512,
-    child_chunk_tokens      INT         NOT NULL DEFAULT 128,
-    search_top_k            INT         NOT NULL DEFAULT 20,
-    search_score_threshold  FLOAT       NOT NULL DEFAULT 0.0,
-    reranker_top_k          INT         NOT NULL DEFAULT 5,
-    reranker_score_threshold FLOAT      NOT NULL DEFAULT 0.5,
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    id                              INT         PRIMARY KEY DEFAULT 1,
+    parent_chunk_tokens             INT         NOT NULL DEFAULT 512,
+    child_chunk_tokens              INT         NOT NULL DEFAULT 128,
+    search_top_k                    INT         NOT NULL DEFAULT 20,
+    search_score_threshold          FLOAT       NOT NULL DEFAULT 0.0,
+    reranker_top_k                  INT         NOT NULL DEFAULT 5,
+    reranker_score_threshold        FLOAT       NOT NULL DEFAULT 0.5,
+    hyde_enabled                    BOOLEAN     NOT NULL DEFAULT TRUE,
+    multiquery_enabled              BOOLEAN     NOT NULL DEFAULT TRUE,
+    reranker_enabled                BOOLEAN     NOT NULL DEFAULT TRUE,
+    contextual_compression_enabled  BOOLEAN     NOT NULL DEFAULT TRUE,
+    parent_child_expansion_enabled  BOOLEAN     NOT NULL DEFAULT TRUE,
+    llm_provider                    VARCHAR(32) NOT NULL DEFAULT 'local'
+                    CHECK (llm_provider IN ('local', 'openai', 'anthropic', 'gemini')),
+    llm_model                       VARCHAR(128) NOT NULL DEFAULT 'gemma3:12b',
+    embedding_provider              VARCHAR(32) NOT NULL DEFAULT 'local'
+                    CHECK (embedding_provider IN ('local', 'gemini')),
+    embedding_model                 VARCHAR(128) NOT NULL DEFAULT 'bge-m3',
+    updated_at                      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT rag_config_single_row CHECK (id = 1)
 );
 
+-- Migration: add toggle columns to existing deployments (idempotent)
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS hyde_enabled                   BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS multiquery_enabled             BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS reranker_enabled               BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS contextual_compression_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS parent_child_expansion_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS llm_provider                   VARCHAR(32) NOT NULL DEFAULT 'local'
+    CONSTRAINT rag_config_llm_provider_check CHECK (llm_provider IN ('local', 'openai', 'anthropic', 'gemini'));
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS llm_model                      VARCHAR(128) NOT NULL DEFAULT 'gemma3:12b';
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS embedding_provider             VARCHAR(32) NOT NULL DEFAULT 'local'
+    CONSTRAINT rag_config_embedding_provider_check CHECK (embedding_provider IN ('local', 'gemini'));
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS embedding_model                VARCHAR(128) NOT NULL DEFAULT 'bge-m3';
+
 INSERT INTO rag_config (id, parent_chunk_tokens, child_chunk_tokens, search_top_k,
                         search_score_threshold, reranker_top_k, reranker_score_threshold,
-                        updated_at)
-VALUES (1, 512, 128, 20, 0.0, 5, 0.5, NOW())
+                        hyde_enabled, multiquery_enabled, reranker_enabled,
+                        contextual_compression_enabled, parent_child_expansion_enabled,
+                        llm_provider, llm_model, embedding_provider, embedding_model, updated_at)
+VALUES (1, 512, 128, 20, 0.0, 5, 0.5, TRUE, TRUE, TRUE, TRUE, TRUE, 'local', 'gemma3:12b', 'local', 'bge-m3', NOW())
 ON CONFLICT (id) DO NOTHING;
 
 -- =============================================================================

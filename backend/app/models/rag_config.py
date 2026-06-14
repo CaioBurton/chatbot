@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import CheckConstraint, Column, Float, Integer
+from sqlalchemy import Boolean, CheckConstraint, Column, Float, Integer, String
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 from app.models.document import Base
@@ -17,6 +17,15 @@ class RagConfig(Base):
     search_score_threshold = Column(Float, nullable=False, default=0.0)
     reranker_top_k = Column(Integer, nullable=False, default=5)
     reranker_score_threshold = Column(Float, nullable=False, default=0.5)
+    hyde_enabled = Column(Boolean, nullable=False, default=True)
+    multiquery_enabled = Column(Boolean, nullable=False, default=True)
+    reranker_enabled = Column(Boolean, nullable=False, default=True)
+    contextual_compression_enabled = Column(Boolean, nullable=False, default=True)
+    parent_child_expansion_enabled = Column(Boolean, nullable=False, default=True)
+    llm_provider = Column(String(32), nullable=False, default="local")
+    llm_model = Column(String(128), nullable=False, default="gemma3:12b")
+    embedding_provider = Column(String(32), nullable=False, default="local")
+    embedding_model = Column(String(128), nullable=False, default="bge-m3")
     updated_at = Column(
         TIMESTAMP(timezone=True),
         nullable=False,
