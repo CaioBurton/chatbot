@@ -13,6 +13,8 @@ export interface TokenResponse {
 export interface DocumentListItem {
   id: string
   original_name: string
+  display_name: string
+  source_url: string | null
   status: string
   file_type: string
   total_chunks: number | null

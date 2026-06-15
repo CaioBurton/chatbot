@@ -4,7 +4,7 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Response, UploadFile, status
 from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
 from sqlalchemy import case, func, select
 from sqlalchemy import update as sa_update
@@ -57,6 +57,8 @@ def _sanitise_filename(raw: str) -> str:
 async def upload_document(
     file: UploadFile,
     background_tasks: BackgroundTasks,
+    display_name: str | None = Form(None),
+    source_url: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     _user=Depends(require_admin),
 ) -> DocumentUploadResponse:
@@ -120,9 +122,14 @@ async def upload_document(
     # 6. Insert document record (status=uploaded)
     #    If this fails, delete the orphaned file so disk and DB stay in sync.
     # ------------------------------------------------------------------ #
+    resolved_display_name = (display_name or "").strip() or (file.filename or sanitised_name)
+    resolved_source_url = (source_url or "").strip() or None
+
     doc = Document(
         filename=storage_filename,
         original_name=file.filename or sanitised_name,
+        display_name=resolved_display_name,
+        source_url=resolved_source_url,
         file_hash=file_hash,
         file_type="pdf_native",
         ocr_applied=False,
@@ -150,6 +157,8 @@ async def upload_document(
         id=doc.id,
         status=doc.status,
         original_name=doc.original_name,
+        display_name=doc.display_name,
+        source_url=doc.source_url,
     )
 
 
@@ -478,6 +487,8 @@ async def reindex_document(
         id=doc.id,
         status=doc.status,
         original_name=doc.original_name,
+        display_name=doc.display_name,
+        source_url=doc.source_url,
     )
 
 

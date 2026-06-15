@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type DragEvent, type ChangeEvent } from 'r
 import { FileText, CheckCircle2, XCircle, Loader2, UploadCloud } from 'lucide-react'
 import { API_BASE } from '../../lib/api'
 import { useIndexingProgress } from '../../hooks/useIndexingProgress'
+import UploadMetadataModal from './UploadMetadataModal'
 
 interface FileEntry {
   id: string            // stable UUID per upload attempt — avoids name-collision bugs
@@ -136,13 +137,14 @@ function FileEntryRow({
 
 export default function UploadZone({ onUploaded }: Props) {
   const [files, setFiles] = useState<FileEntry[]>([])
+  const [pending, setPending] = useState<File[]>([])
   const [dragging, setDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   // Tracks nested drag-enter/leave events so the drop-zone highlight
   // doesn't flicker when the cursor passes over child elements.
   const dragCounter = useRef(0)
 
-  const uploadFile = (file: File) => {
+  const uploadFile = (file: File, displayName: string, sourceUrl: string) => {
     // Use crypto.randomUUID when available, fall back to timestamp+random.
     const id =
       typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -191,6 +193,8 @@ export default function UploadZone({ onUploaded }: Props) {
 
     const form = new FormData()
     form.append('file', file)
+    if (displayName) form.append('display_name', displayName)
+    if (sourceUrl) form.append('source_url', sourceUrl)
     xhr.open('POST', `${API_BASE}/documents/upload`)
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.send(form)
@@ -199,6 +203,7 @@ export default function UploadZone({ onUploaded }: Props) {
   const handleFiles = (incoming: FileList | File[]) => {
     const list = Array.from(incoming)
     // Client-side pre-filter: only application/pdf (backend is authoritative)
+    const accepted: File[] = []
     for (const f of list) {
       if (f.type !== 'application/pdf') {
         setFiles(prev => [
@@ -207,8 +212,19 @@ export default function UploadZone({ onUploaded }: Props) {
         ])
         continue
       }
-      uploadFile(f)
+      accepted.push(f)
     }
+    if (accepted.length > 0) setPending(prev => [...prev, ...accepted])
+  }
+
+  const handleModalConfirm = (displayName: string, sourceUrl: string) => {
+    const [file, ...rest] = pending
+    uploadFile(file, displayName, sourceUrl)
+    setPending(rest)
+  }
+
+  const handleModalCancel = () => {
+    setPending(prev => prev.slice(1))
   }
 
   const onDrop = (e: DragEvent<HTMLDivElement>) => {
@@ -289,6 +305,15 @@ export default function UploadZone({ onUploaded }: Props) {
             />
           ))}
         </ul>
+      )}
+
+      {pending.length > 0 && (
+        <UploadMetadataModal
+          fileName={pending[0].name}
+          remaining={pending.length - 1}
+          onConfirm={handleModalConfirm}
+          onCancel={handleModalCancel}
+        />
       )}
     </div>
   )

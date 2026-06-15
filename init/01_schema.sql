@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS documents (
     id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     filename        TEXT        NOT NULL,                    -- storage filename (sanitised)
     original_name   TEXT        NOT NULL,                    -- original upload filename
+    display_name    TEXT,                                    -- admin-provided name shown in the UI (defaults to original_name)
+    source_url      TEXT,                                    -- optional external link to the source document
     file_hash       TEXT        NOT NULL UNIQUE,          -- SHA-256 hex digest for dedup (unique: no duplicate content)
     file_type       TEXT        NOT NULL
                     CHECK (file_type IN (
@@ -44,6 +46,11 @@ CREATE TABLE IF NOT EXISTS documents (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Migration: add display_name/source_url to existing deployments (idempotent)
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS display_name TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_url   TEXT;
+UPDATE documents SET display_name = original_name WHERE display_name IS NULL;
 
 -- =============================================================================
 -- chunks

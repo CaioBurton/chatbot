@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { RefreshCw, Trash2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { RefreshCw, Trash2, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import { authFetch, API_BASE, type DocumentListItem } from '../../lib/api'
 
 const PAGE_SIZE = 20
@@ -78,7 +78,7 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
   }
 
   const handleDelete = (doc: DocumentListItem) => {
-    if (!window.confirm(`Excluir "${doc.original_name}"? Esta ação é irreversível.`)) return
+    if (!window.confirm(`Excluir "${doc.display_name}"? Esta ação é irreversível.`)) return
     authFetch(`${API_BASE}/documents/${encodeURIComponent(doc.id)}`, { method: 'DELETE' })
       .then(res => {
         if (!res.ok) throw new Error('delete error')
@@ -146,7 +146,20 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
                   className="border-b border-[#eee] dark:border-[#383838] last:border-0 hover:bg-[#f9f9f9] dark:hover:bg-[#333]"
                 >
                   <td className="max-w-[240px] overflow-hidden text-ellipsis whitespace-nowrap px-4 py-2">
-                    {doc.original_name}
+                    <span className="inline-flex items-center gap-1.5">
+                      {doc.display_name}
+                      {doc.source_url && (
+                        <a
+                          href={doc.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={doc.source_url}
+                          className="text-[#0078d4] hover:text-[#005a9e] shrink-0"
+                        >
+                          <ExternalLink size={12} />
+                        </a>
+                      )}
+                    </span>
                   </td>
                   <td className="px-4 py-2 text-xs text-[#777] dark:text-[#aaa]">
                     {doc.file_type}

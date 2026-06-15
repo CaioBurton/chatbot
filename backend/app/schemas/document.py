@@ -11,6 +11,8 @@ class DocumentUploadResponse(BaseModel):
     id: UUID
     status: str
     original_name: str
+    display_name: str
+    source_url: str | None
 
 
 class DocumentListItem(BaseModel):
@@ -18,6 +20,8 @@ class DocumentListItem(BaseModel):
 
     id: UUID
     original_name: str
+    display_name: str
+    source_url: str | None
     status: str
     file_type: str
     total_chunks: int | None
@@ -29,6 +33,8 @@ class DocumentDetail(BaseModel):
 
     id: UUID
     original_name: str
+    display_name: str
+    source_url: str | None
     status: str
     file_type: str
     ocr_applied: bool

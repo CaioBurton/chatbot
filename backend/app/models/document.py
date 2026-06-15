@@ -21,6 +21,8 @@ class Document(Base):
     )
     filename = Column(Text, nullable=False)
     original_name = Column(Text, nullable=False)
+    display_name = Column(Text, nullable=True)
+    source_url = Column(Text, nullable=True)
     file_hash = Column(Text, nullable=False, unique=True)
     file_type = Column(Text, nullable=False)
     ocr_applied = Column(Boolean, nullable=False, default=False, server_default="false")
