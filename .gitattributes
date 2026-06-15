@@ -1,0 +1,10 @@
+# Force LF line endings for files executed inside Linux containers,
+# regardless of core.autocrlf on the checkout machine.
+# Without this, a CRLF shebang ("#!/usr/bin/env bash\r") makes the
+# postgres-alpine entrypoint fail with "env: can't execute 'bash\r'",
+# silently aborting init/00_roles.sh on first container startup.
+*.sh text eol=lf
+init/** text eol=lf
+Dockerfile text eol=lf
+*.sql text eol=lf
+.gitattributes text eol=lf
