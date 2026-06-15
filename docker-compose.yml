@@ -20,6 +20,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       # Passed to init/00_roles.sh which creates the limited-privilege app role
       PROPESQI_APP_PASSWORD: ${PROPESQI_APP_PASSWORD}
+      # Passed to init/02_seed_admin.sh which seeds the first admin user
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d:ro
