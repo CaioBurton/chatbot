@@ -680,6 +680,73 @@ reranker_top_k  = 20
 context_top_k   = 8
 ```
 
+---
+
+## Passo 7 — HyDE com contexto de domínio especializado
+
+**Objetivo:** corrigir o mismatch semântico de Q26 ("por qual sistema as inscrições são realizadas?") enriquecendo o prompt HyDE com contexto do domínio UFPI/PROPESQI, de modo que o documento hipotético gerado mencione explicitamente "SIGAA".
+
+**Motivação:** o diagnóstico do Passo 6 confirmou que 315 chunks contêm "SIGAA", mas o chunk de cronograma relevante (pg=9: "Inscrições via SIGAA: de 11/03 a 08/04/2025") não é surfaçado pela query abstrata "por qual sistema" porque o HyDE gera texto genérico sem mencionar o sistema por nome. Enriquecer o prompt HyDE com contexto institucional resolve o problema sem fine-tuning.
+
+### Mudança implementada
+
+**Arquivo:** `backend/app/core/rag_engine.py` — prompt HyDE (linha 495)
+
+**Antes:**
+```python
+hyde_prompt = (
+    f"Escreva uma resposta curta e factual para a seguinte pergunta "
+    f"sobre documentos da PROPESQI/UFPI:\n\n{query}"
+)
+```
+
+**Depois:**
+```python
+hyde_prompt = (
+    "Você é um assistente especializado nos editais da PROPESQI/UFPI.\n"
+    "Contexto do domínio: na UFPI, as inscrições e o envio de relatórios nos "
+    "programas de iniciação científica (PIBIC, PIBIC-Af, PIBITI, ICV, PIBIC-EM/PIBICEM) "
+    "são realizados pelo SIGAA (Sistema Integrado de Gestão de Atividades Acadêmicas). "
+    "Os editais são publicados pela PROPESQI e estabelecem prazos, requisitos e fluxos "
+    "para orientadores e bolsistas.\n\n"
+    f"Escreva uma resposta curta e factual para a seguinte pergunta "
+    f"sobre os editais da PROPESQI/UFPI:\n\n{query}"
+)
+```
+
+### Smoke test (Q05, Q26, Q29) — Passo 7a
+
+**Arquivo:** `groundtruth_chatbot_rag_resultados_passo7a_smoke.csv`
+
+| ID | Passo 6 | Passo 7a | Resultado |
+|---|---|---|---|
+| Q05 | 0.2 | 0.2 | — sem melhora; resposta ainda cita vigência do edital |
+| Q26 | 1.0 | 1.0 | fallback idêntico — HyDE insuficiente |
+| Q29 | 1.0 | 1.0 | fallback idêntico — cross-encoder bias inalterado |
+
+### Conclusão do Passo 7
+
+**HyDE com contexto de domínio não resolveu Q26 nem Q29.** A análise do fallback de Q26 aponta que o chunk de SIGAA continua ausente dos candidatos ou é filtrado pelo reranker mesmo com o HyDE gerando texto que menciona SIGAA:
+
+- **Q26**: o chunk "Inscrições via SIGAA: de 11/03 a 08/04/2025" é uma entrada de cronograma; ao ser pontuado pelo cross-encoder contra a query abstrata "por qual sistema...", recebe score baixo porque o chunk responde "quando" e não "por qual sistema". O problema não é de recuperação — é de representação: não existe nos documentos indexados um chunk que responda diretamente "As inscrições são feitas pelo SIGAA" em forma declarativa. A pergunta Q26 pressupõe um texto que simplesmente não está na base.
+- **Q29**: cross-encoder não infere equivalência semântica "filho" → "parente em linha reta". Confirmação do diagnóstico do Passo 6 — fine-tuning é a única solução.
+
+**O HyDE enriquecido é mantido** (melhora potencial para outras queries do domínio), mas não resolve Q26 e Q29.
+
+### Configuração final do Passo 7
+
+Sem alteração em `rag_config` — apenas o prompt HyDE foi modificado.
+
+```python
+# rag_engine.py — HyDE prompt (mantido)
+"Você é um assistente especializado nos editais da PROPESQI/UFPI.\n"
+"Contexto do domínio: na UFPI, as inscrições e o envio de relatórios nos "
+"programas de IC (PIBIC, PIBIC-Af, PIBITI, ICV, PIBIC-EM/PIBICEM) "
+"são realizados pelo SIGAA..."
+```
+
+---
+
 ## Próximos passos recomendados
 
 ### Alta prioridade
@@ -687,9 +754,7 @@ context_top_k   = 8
 1. **Fine-tuning do reranker** ← **única solução definitiva para Q29 e Q26**  
    Com as 30 perguntas do dataset, chunks corretos identificados e scores do cross-encoder documentados, há material suficiente para montar pares positivos/negativos e treinar um cross-encoder especializado no domínio PROPESQI/UFPI. Ferramentas: `sentence-transformers` `CrossEncoderTrainer`. Estimativa: 2–4h para montar o dataset de treino e executar o fine-tuning.
 
-2. **HyDE especializado para Q26** — o HyDE atual gera um documento genérico sobre inscrições; um prompt que force a mencionar o nome do sistema ("As inscrições são realizadas via SIGAA em www.sigaa.ufpi.br") alinharia com os chunks de cronograma que contêm SIGAA.
-
-### Média prioridade
+2. ~~**HyDE especializado para Q26**~~ — implementado no Passo 7.
 
 ### Média prioridade
 
@@ -716,6 +781,7 @@ context_top_k   = 8
 | + compressão contextual | <4.09* | — | — | smoke (revertido) |
 | **+ doc_type filter + reranker** | **4.04** | **4** | **19** | ✅ |
 | + reranker_top_k=20, context_top_k=8 | ~4.04* | ~4* | ~19* | smoke |
+| + HyDE com contexto de domínio (SIGAA) | ~4.04* | ~4* | ~19* | smoke |
 
 \* estimativa via smoke test, sem full eval de 30 questões.
 

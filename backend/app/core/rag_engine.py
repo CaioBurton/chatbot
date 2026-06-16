@@ -493,8 +493,14 @@ async def rag_stream(
         # 2. HyDE — hypothetical document embedding                          #
         # ------------------------------------------------------------------ #
         hyde_prompt = (
+            "Você é um assistente especializado nos editais da PROPESQI/UFPI.\n"
+            "Contexto do domínio: na UFPI, as inscrições e o envio de relatórios nos "
+            "programas de iniciação científica (PIBIC, PIBIC-Af, PIBITI, ICV, PIBIC-EM/PIBICEM) "
+            "são realizados pelo SIGAA (Sistema Integrado de Gestão de Atividades Acadêmicas). "
+            "Os editais são publicados pela PROPESQI e estabelecem prazos, requisitos e fluxos "
+            "para orientadores e bolsistas.\n\n"
             f"Escreva uma resposta curta e factual para a seguinte pergunta "
-            f"sobre documentos da PROPESQI/UFPI:\n\n{query}"
+            f"sobre os editais da PROPESQI/UFPI:\n\n{query}"
         )
 
         # ------------------------------------------------------------------ #
