@@ -318,16 +318,90 @@ UPDATE rag_config SET contextual_compression_enabled = false WHERE id = 1;
 
 ---
 
-## Configuração final em produção
+## Passo 5 — `doc_type` payload filter + reranker reabilitado
 
+**Motivação:** a causa raiz do conflito reranker × PIBIC é que portarias e relatórios competem com editais no pool de busca. A solução é classificar cada documento por tipo no upload e excluir `portaria` e `relatorio` do `hybrid_search` via `payload_filter` no Qdrant. Com o pool limpo, o reranker pode ser reabilitado com segurança.
+
+### Implementação (commit `ade3865`)
+
+**Backend:**
+- `app/models/document.py` — campo `doc_type = Column(Text, nullable=False, server_default="edital")`
+- `app/schemas/document.py` — `doc_type: str` adicionado a `DocumentUploadResponse`, `DocumentListItem`, `DocumentDetail`
+- `app/api/routes/documents.py` — `doc_type: str = Form("edital")` no endpoint de upload; propagado para `Document()` e para todas as chamadas a `process_document()`
+- `app/ingestion/processor.py` — parâmetro `doc_type` propagado para `chunk_pages()`
+- `app/ingestion/chunker.py` — `doc_type` incluído no dict `metadata` de cada chunk → payload Qdrant
+- `app/db/search.py` — `expand_to_parents()` retorna `doc_type` em cada entry
+- `app/core/rag_engine.py` — `_RAG_PAYLOAD_FILTER` (exclui `portaria` e `relatorio`) passado para todas as chamadas a `hybrid_search()`
+
+**Frontend:**
+- `UploadMetadataModal.tsx` — selector "Tipo do documento" (edital / aditivo / resolucao / tutorial / portaria / relatorio)
+- `UploadZone.tsx` — `doc_type` anexado ao `FormData` e repassado pelo `handleModalConfirm`
+
+**Banco de dados:**
+- Migração aplicada ao banco ativo: `ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_type TEXT NOT NULL DEFAULT 'edital'`
+- `init/01_schema.sql` atualizado com migração idempotente
+
+**Mudança no rag_config:**
 ```sql
--- Estado atual de rag_config (id=1)
+UPDATE rag_config SET reranker_enabled = TRUE, updated_at = NOW() WHERE id = 1;
+```
+
+**Estado atual do rag_config:**
+```
 parent_child_expansion_enabled = true
 hyde_enabled                   = true
 multiquery_enabled             = true
-reranker_enabled               = false   -- mantido off (viés estrutural)
+reranker_enabled               = true   ← reabilitado após filtragem por doc_type
 contextual_compression_enabled = false
-search_top_k                   = 30      -- era 20
+search_top_k                   = 30
+search_score_threshold         = 0.0
+reranker_top_k                 = 5
+reranker_score_threshold       = 0.5
+llm_provider                   = gemini
+llm_model                      = gemini-3.1-flash-lite
+embedding_provider             = local
+embedding_model                = bge-m3:latest
+```
+
+### Smoke test (Q01–Q05 após reindexação com doc_type correto)
+
+Todos os documentos foram reindexados pelo usuário com o tipo correto via modal de upload.
+
+| ID | Passo 3 (sem reranker) | Passo 5 (com filtro + reranker) | Δ |
+|---|---|---|---|
+| Q01 | 5.0 | 5.0 | — |
+| Q02 | 3.5 | 3.5 | — |
+| Q03 | 4.5 | 4.3 | -0.2 (ruído) |
+| Q04 | 3.0 | **5.0** | +2.0 ✅ |
+| Q05 | 5.0 | 5.0 | — |
+| **Média Q01–Q05** | **4.20** | **4.56** | **+0.36** |
+
+Q04 (distribuição de cotas por área do conhecimento — tabela) subiu de 3.0 para 5.0: a resposta passou de 413 para 1071 chars, cobrindo a fórmula proporcional completa. Com as portarias excluídas do pool, o reranker conseguiu surfaçar o chunk correto do edital.
+
+### Status
+
+**Avaliação completa de 30 questões NÃO realizada** — cota gratuita da API Gemini esgotada durante o smoke test. A cota gratuita (`gemini-3.1-flash-lite` free tier) reseta a cada 24h. Quando resetar, basta rodar:
+
+```bash
+cd backend/
+python tests/run_groundtruth_eval.py \
+  --output tests/groundtruth_chatbot_rag_resultados_passo5_full.csv
+```
+
+O script já está configurado com `_GEMINI_CALLS_PER_CHAT = 3` (intervalo mínimo 12 s por pergunta, respeitando RPM=15).
+
+---
+
+## Configuração atual em produção
+
+```sql
+-- Estado de rag_config (id=1) no momento do relatório
+parent_child_expansion_enabled = true
+hyde_enabled                   = true
+multiquery_enabled             = true
+reranker_enabled               = true    -- reabilitado (portarias filtradas por doc_type)
+contextual_compression_enabled = false
+search_top_k                   = 30
 search_score_threshold         = 0.0
 reranker_top_k                 = 5
 reranker_score_threshold       = 0.5
@@ -339,51 +413,34 @@ embedding_model                = bge-m3:latest
 
 ---
 
-## Questões ainda problemáticas
+## Questões ainda problemáticas (estimativa pré-full-eval)
 
-| ID | Programa | Nota atual | Causa identificada |
-|---|---|---|---|
-| Q13 | ICV | 0.0–4.5 (varia) | Chunk correto não estável no top-5 sem reranker; melhora muito com reranker mas reranker quebra PIBIC |
-| Q14 | ICV | 3.5 | Prazo específico recuperado mas com baixa consistência |
-| Q15 | ICV | 0.0–5.0 (varia) | Mesmo padrão de Q13 |
-
-ICV depende do reranker para surfaçar os chunks certos. O reranker, por sua vez, quebra questões PIBIC. Esse conflito não é resolvível com parâmetros de `rag_config`.
-
----
-
-## Causa raiz do conflito reranker × PIBIC
-
-O corpus contém múltiplos documentos com vocabulário quase idêntico:
-- Editais PIBIC, PIBIC-Af, PIBITI, PIBICEM — mesma estrutura, nomes parcialmente iguais
-- Portarias de designação de comitês — citam os nomes dos programas nominalmente
-- Aditivos — referenciam seções dos editais
-
-O `bge-reranker-v2-m3` não resolve a ambiguidade entre esses documentos para perguntas gerais ("objetivos do PIBIC", "IRA mínimo PIBIC"), priorizando portarias (que têm alta co-ocorrência lexical com o nome do programa) sobre os trechos substantivos dos editais.
+| ID | Programa | Nota passo 3 | Causa identificada | Expectativa passo 5 |
+|---|---|---|---|---|
+| Q13 | ICV | 0.0–4.5 (varia) | Chunk correto não estável no top-5 sem reranker | Melhora com reranker + portarias filtradas |
+| Q14 | ICV | 3.5 | Prazo em tabela de cronograma — compressor descartaria | Mantém ou melhora (compression=false) |
+| Q15 | ICV | 0.0–5.0 (varia) | Mesmo padrão de Q13 | Melhora com reranker |
+| Q04 | PIBIC | 3.0 | Chunk de tabela de cotas por área | **Confirmado 5.0 no smoke test** |
 
 ---
 
 ## Próximos passos recomendados
 
-### Alta prioridade
+### Imediato (quando a cota Gemini resetar)
 
-1. **Filtragem por tipo de documento (`doc_type` no payload)**  
-   Durante a indexação, marcar cada chunk com `doc_type` ("edital", "portaria", "relatorio", "modulo_sigaa", "aditivo"). Adicionar `payload_filter` ao `hybrid_search` com base no tipo de pergunta detectado (simples classificador de intenção ou regex). Isso previne que portarias compitam com editais em perguntas de conteúdo, e permitiria reabilitar o reranker com segurança.
-
-2. **Reindexar com `doc_type` e testar reranker + filtragem**  
-   Com portarias excluídas do pool para queries de conteúdo, o cross-encoder consegue distinguir PIBIC de PIBIC-EM de forma mais confiável → reativação segura do reranker.
+1. **Rodar avaliação completa** (`--output groundtruth_chatbot_rag_resultados_passo5_full.csv`)
+2. **Atualizar este relatório** com os resultados e a tabela de evolução
 
 ### Média prioridade
 
-3. **Habilitação de `contextual_compression_enabled`**  
-   Comprime cada chunk ao trecho mais relevante antes de enviar ao LLM. Pode ajudar Q05 (vigência) onde o LLM confunde "vigência do edital" com "vigência das bolsas" por ter contexto amplo demais.
+3. **Aditivos como documentos relacionados**  
+   Q30 ("o que o Aditivo nº 1 alterou") pontuou 3.0 no Passo 3. Os chunks de aditivos foram reindexados com `doc_type="aditivo"` mas não são excluídos do pool. Avaliar se associar aditivos ao edital de origem (por metadado `edital_ref`) melhora a recuperação conjunta edital + aditivo.
 
-4. **Fine-tuning ou re-ranker alternativo**  
-   Treinar um cross-encoder especializado com pares (pergunta PROPESQI, chunk correto) usando as 30 perguntas deste dataset como semente. Alternativa: testar `cross-encoder/ms-marco-MiniLM-L-6-v2` com instrução de sistema explicitando o domínio.
+4. **Compressão contextual seletiva**  
+   Reabilitar `contextual_compression_enabled` apenas para queries onde o contexto é explicitamente ambíguo (ex: Q05 — "vigência das bolsas" vs "vigência do edital"). Isso requereria lógica no `rag_engine.py` para detectar o tipo de query antes de comprimir.
 
-### Documentação
-
-5. **Aditivos como documentos separados vs. patches inline**  
-   Q30 ("o que o Aditivo nº 1 alterou") pontua 3.0 — o chatbot identifica apenas parte das mudanças do aditivo. Avaliar se chunks de aditivos devem ser associados (por metadado) aos chunks dos editais que alteram, para que o LLM sempre receba o par edital+aditivo junto.
+5. **Fine-tuning do reranker**  
+   Com as 30 perguntas do dataset e os chunks corretos identificados como semente positiva, treinar um cross-encoder especializado no domínio PROPESQI/UFPI.
 
 ---
 
@@ -397,5 +454,6 @@ O `bge-reranker-v2-m3` não resolve a ambiguidade entre esses documentos para pe
 | + HyDE + multiquery + reranker | ~3.5* | ~7* | ~17* | smoke |
 | **+ HyDE + multiquery (sem reranker)** | **4.09** | **3** | **21** | ✅ |
 | + compressão contextual | <4.09* | — | — | smoke (revertido) |
+| **+ doc_type filter + reranker** | **?** | **?** | **?** | **⏳ aguarda cota Gemini** |
 
 \* estimativa via smoke test, sem full eval de 30 questões.
