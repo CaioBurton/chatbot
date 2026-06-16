@@ -56,7 +56,7 @@ _GEMINI_RPM = 15
 # With HyDE + multi-query enabled, each /chat/stream internally fires up to 3
 # Gemini calls (HyDE, reformulations, final generation) before the judge call.
 # Use 4 "slots" per row so the combined burst stays inside the RPM budget.
-_GEMINI_CALLS_PER_CHAT = 3  # HyDE + multiquery + generation (worst case)
+_GEMINI_CALLS_PER_CHAT = 3  # HyDE + multiquery + generation (worst case sem compressão)
 _MIN_GEMINI_INTERVAL = (60.0 / _GEMINI_RPM) * _GEMINI_CALLS_PER_CHAT
 _last_gemini_call = 0.0
 

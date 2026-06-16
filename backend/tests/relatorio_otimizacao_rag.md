@@ -277,6 +277,47 @@ Q26 (SIGAA) e Q29 (conflito de interesses) foram respondidos corretamente pela p
 
 ---
 
+## Passo 4 — `contextual_compression_enabled = true` (testado e revertido)
+
+**Motivação:** comprimir cada chunk pai ao trecho mais relevante antes de enviar ao LLM reduz ruído de contexto e pode ajudar o modelo a focar na frase com a resposta (ex: Q05 — confusão entre "vigência do edital" e "vigência das bolsas").
+
+**Impacto no rate limiting:** com HyDE + multiquery + 5 chunks comprimidos + geração = **8 chamadas Gemini internas** por `/chat/stream`. O script de avaliação foi ajustado temporariamente para `_GEMINI_CALLS_PER_CHAT = 8` (intervalo mínimo = 32 s).
+
+**Mudança aplicada:**
+```sql
+UPDATE rag_config SET contextual_compression_enabled = true WHERE id = 1;
+```
+
+**Smoke test (8 questões — comparação com Passo 3):**
+
+| ID | Passo 3 | Passo 4 | Δ |
+|---|---|---|---|
+| Q01 | 5.0 | 5.0 | — |
+| Q05 | 5.0 | 4.0 | -1.0 ❌ |
+| Q13 | ~0.0* | **4.5** | +4.5 ✅ |
+| Q14 | **3.5** | 0.0 | -3.5 ❌ |
+| Q15 | 0.0 | 0.0 | — |
+| Q20 | 5.0 | 4.8 | -0.2 (ruído) |
+| Q26 | **4.2** | 0.5 | -3.7 ❌ |
+| Q29 | 4.8 | **5.0** | +0.2 ✅ |
+
+\* Q13 variável entre runs no Passo 3.
+
+**Diagnóstico:** a compressão contextual é prejudicial para este corpus. A causa raiz é que editais institucionais são ricos em **tabelas de cronograma, rubricas de pontuação e listas numeradas** — estruturas que o LLM-compressor não consegue reduzir a "frases relevantes" sem perder a informação. Exemplos:
+
+- **Q14** (prazo relatório parcial ICV): o chunk relevante é uma tabela de cronograma. O compressor converte a tabela em texto incompleto ou descarta a linha com a data, e o LLM final recebe contexto sem a resposta.
+- **Q26** (sistema SIGAA): o compressor filtra a menção ao SIGAA como "não diretamente relevante" dentro de um parágrafo sobre inscrições, descartando o nome do sistema.
+- **Q13/Q29** (sanções e conflito de interesses): textos em prosa contínua — compressor funciona bem, extrai a cláusula correta.
+
+**Conclusão:** a compressão funciona bem para prosa, mas é net negativa neste corpus dado o alto volume de conteúdo tabular e estruturado. **Revertido** para a configuração do Passo 3.
+
+```sql
+UPDATE rag_config SET contextual_compression_enabled = false WHERE id = 1;
+-- _GEMINI_CALLS_PER_CHAT revertido para 3 no script de avaliação
+```
+
+---
+
 ## Configuração final em produção
 
 ```sql
@@ -348,12 +389,13 @@ O `bge-reranker-v2-m3` não resolve a ambiguidade entre esses documentos para pe
 
 ## Resumo da evolução
 
-| Configuração | Média | Ruins (<2.5) | Excelentes (≥4.5) |
-|---|---|---|---|
-| Baseline (todos off) | 3.63 | 7 | 19 |
-| + parent_child_expansion | ~3.65* | ~6* | ~19* |
-| + reranker (threshold=0.5) | 3.64 | 6 | 18 |
-| + HyDE + multiquery + reranker | ~3.5* | ~7* | ~17* |
-| **+ HyDE + multiquery (sem reranker)** | **4.09** | **3** | **21** |
+| Configuração | Média | Ruins (<2.5) | Excelentes (≥4.5) | Full eval? |
+|---|---|---|---|---|
+| Baseline (todos off) | 3.63 | 7 | 19 | ✅ |
+| + parent_child_expansion | ~3.65* | ~6* | ~19* | smoke |
+| + reranker (threshold=0.5) | 3.64 | 6 | 18 | ✅ |
+| + HyDE + multiquery + reranker | ~3.5* | ~7* | ~17* | smoke |
+| **+ HyDE + multiquery (sem reranker)** | **4.09** | **3** | **21** | ✅ |
+| + compressão contextual | <4.09* | — | — | smoke (revertido) |
 
 \* estimativa via smoke test, sem full eval de 30 questões.
