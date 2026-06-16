@@ -724,25 +724,85 @@ hyde_prompt = (
 | Q26 | 1.0 | 1.0 | fallback idêntico — HyDE insuficiente |
 | Q29 | 1.0 | 1.0 | fallback idêntico — cross-encoder bias inalterado |
 
+### Avaliação completa das 30 questões — Passo 7
+
+**Arquivo:** `groundtruth_chatbot_rag_resultados_passo7_full.csv`
+
+| ID | Passo 5* | Passo 7 | Δ | Programa |
+|---|---|---|---|---|
+| Q01 | 5.0 | 5.0 | = | PIBIC |
+| Q02 | 3.6 | 3.5 | -0.1 | PIBIC |
+| Q03 | 4.3 | 3.5 | **-0.8** | PIBIC |
+| Q04 | 5.0 | 4.0 | **-1.0** | PIBIC |
+| Q05 | 0.2 | 0.2 | = | PIBIC |
+| Q06 | 5.0 | 4.5 | -0.5 | PIBIC |
+| Q07 | 5.0 | 5.0 | = | PIBIC |
+| Q08 | 4.5 | 4.5 | = | PIBIC |
+| Q09 | 5.0 | 5.0 | = | PIBIC |
+| Q10 | 4.1 | 5.0 | +0.9 | PIBIC |
+| Q11 | 4.5 | 4.5 | = | ICV |
+| Q12 | 4.8 | 4.4 | -0.4 | ICV |
+| Q13 | 4.5 | 4.5 | = | ICV |
+| Q14 | 3.5 | 3.5 | = | ICV |
+| Q15 | 0.5 | 0.0 | **-0.5** | ICV |
+| Q16 | 4.8 | 5.0 | +0.2 | PIBITI |
+| Q17 | 5.0 | 5.0 | = | PIBITI |
+| Q18 | 3.5 | 2.8 | **-0.7** | PIBITI |
+| Q19 | 5.0 | 4.5 | -0.5 | PIBITI |
+| Q20 | 4.8 | 4.0 | **-0.8** | PIBICEM |
+| Q21 | 4.5 | 4.5 | = | PIBICEM |
+| Q22 | 4.5 | 4.5 | = | PIBICEM |
+| Q23 | 5.0 | 5.0 | = | PIBICEM |
+| Q24 | 4.8 | 4.5 | -0.3 | Geral |
+| Q25 | 0.8 | 0.5 | -0.3 | Geral |
+| Q26 | 0.5 | 1.0 | +0.5 | Geral |
+| Q27 | 4.8 | 4.3 | -0.5 | Geral |
+| Q28 | 5.0 | 5.0 | = | Geral |
+| Q29 | 0.5 | 1.0 | +0.5 | Geral |
+| Q30 | 4.6 | 4.3 | -0.3 | Geral |
+
+\* Passo 5 = scores do `passo5_timing.csv` (re-run de referência).
+
+**Δ total:** melhoras +2.1 pts (Q10, Q16, Q26, Q29) — regressões **-6.3 pts** (Q03, Q04, Q06, Q12, Q15, Q18, Q19, Q20, Q24, Q25, Q27, Q30)
+
+### Estatísticas Passo 7 — 30 questões
+
+| Métrica | Passo 5 (full) | Passo 7 (full) | Δ |
+|---|---|---|---|
+| Média | 4.04 | **3.77** | **-0.27** |
+| Ruins (<2.5) | 4 | 5 | +1 |
+| Excelentes (≥4.5) | 19 | 16 | -3 |
+| Tempo médio (s) | 29.4 | 26.6 | -2.8 |
+
+| Programa | Passo 5 | Passo 7 | Δ |
+|---|---|---|---|
+| PIBIC / PIBIC-Af | ~4.17 | 4.02 | -0.15 |
+| ICV | ~3.56 | 3.38 | -0.18 |
+| PIBITI / ITV | ~4.58 | 4.33 | -0.25 |
+| PIBICEM (PIBIC-EM) | ~4.70 | 4.50 | -0.20 |
+| Geral | ~3.00 | 2.94 | -0.06 |
+
 ### Conclusão do Passo 7
 
-**HyDE com contexto de domínio não resolveu Q26 nem Q29.** A análise do fallback de Q26 aponta que o chunk de SIGAA continua ausente dos candidatos ou é filtrado pelo reranker mesmo com o HyDE gerando texto que menciona SIGAA:
+**Avaliação completa confirma regressão: HyDE enriquecido foi net negativo (-0.27 pts/questão média).**
 
-- **Q26**: o chunk "Inscrições via SIGAA: de 11/03 a 08/04/2025" é uma entrada de cronograma; ao ser pontuado pelo cross-encoder contra a query abstrata "por qual sistema...", recebe score baixo porque o chunk responde "quando" e não "por qual sistema". O problema não é de recuperação — é de representação: não existe nos documentos indexados um chunk que responda diretamente "As inscrições são feitas pelo SIGAA" em forma declarativa. A pergunta Q26 pressupõe um texto que simplesmente não está na base.
-- **Q29**: cross-encoder não infere equivalência semântica "filho" → "parente em linha reta". Confirmação do diagnóstico do Passo 6 — fine-tuning é a única solução.
+O prompt HyDE mais longo deslocou o documento hipotético gerado para um texto institucional mais genérico sobre SIGAA e programas, o que alterou o espaço de busca densa e empurrou chunks de editais específicos para baixo no ranking RRF. Consequências observadas:
+- Q03, Q04, Q20: respostas corretas mas agora citam Resolução CEPEX em vez do edital específico — o HyDE recuperou chunks mais gerais que "ganharam" no RRF
+- Q18: resposta com contradição interna (respondeu corretamente e depois disse "não possuo informações") — provavelmente dois chunks conflitantes no contexto
+- Q26, Q29: melhoraram marginalmente (0.5→1.0) mas ainda em fallback — ganho insuficiente para justificar as regressões
 
-**O HyDE enriquecido é mantido** (melhora potencial para outras queries do domínio), mas não resolve Q26 e Q29.
+**Decisão: revertido o HyDE ao prompt original** (simples, sem contexto de domínio injetado).
 
 ### Configuração final do Passo 7
 
-Sem alteração em `rag_config` — apenas o prompt HyDE foi modificado.
+**HyDE revertido ao prompt original (Passo 1–6):**
 
 ```python
-# rag_engine.py — HyDE prompt (mantido)
-"Você é um assistente especializado nos editais da PROPESQI/UFPI.\n"
-"Contexto do domínio: na UFPI, as inscrições e o envio de relatórios nos "
-"programas de IC (PIBIC, PIBIC-Af, PIBITI, ICV, PIBIC-EM/PIBICEM) "
-"são realizados pelo SIGAA..."
+# rag_engine.py — HyDE prompt (revertido)
+hyde_prompt = (
+    f"Escreva uma resposta curta e factual para a seguinte pergunta "
+    f"sobre documentos da PROPESQI/UFPI:\n\n{query}"
+)
 ```
 
 ---
@@ -781,7 +841,7 @@ Sem alteração em `rag_config` — apenas o prompt HyDE foi modificado.
 | + compressão contextual | <4.09* | — | — | smoke (revertido) |
 | **+ doc_type filter + reranker** | **4.04** | **4** | **19** | ✅ |
 | + reranker_top_k=20, context_top_k=8 | ~4.04* | ~4* | ~19* | smoke |
-| + HyDE com contexto de domínio (SIGAA) | ~4.04* | ~4* | ~19* | smoke |
+| + HyDE com contexto de domínio (SIGAA) | 3.77 | 5 | 16 | ✅ (revertido — net negativo) |
 
 \* estimativa via smoke test, sem full eval de 30 questões.
 
