@@ -61,7 +61,10 @@ _GEMINI_RPM = 15
 # interval → 4 calls / 20s = 12 RPM, safely under the 15 RPM limit even when
 # all backend calls fail instantly.
 _GEMINI_CALLS_PER_ROW = 5  # 3 backend (HyDE + multi-query + generation) + 1 judge + 1 margin
-_MIN_GEMINI_INTERVAL = (60.0 / _GEMINI_RPM) * _GEMINI_CALLS_PER_ROW
+_MIN_GEMINI_INTERVAL = max(
+    (60.0 / _GEMINI_RPM) * _GEMINI_CALLS_PER_ROW,  # RPM budget: 20s
+    35.0,  # hard floor: gemini-3.1-flash-lite retry window is ~30s; 35s gives safe margin
+)
 _last_gemini_call = 0.0
 
 
