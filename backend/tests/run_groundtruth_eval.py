@@ -54,10 +54,14 @@ DEFAULT_BASE_URL = "http://localhost:3000/api"
 # so pace every Gemini-consuming call to stay under the limit.
 _GEMINI_RPM = 15
 # With HyDE + multi-query enabled, each /chat/stream internally fires up to 3
-# Gemini calls (HyDE, reformulations, final generation) before the judge call.
-# Use 4 "slots" per row so the combined burst stays inside the RPM budget.
-_GEMINI_CALLS_PER_CHAT = 3  # HyDE + multiquery + generation (worst case sem compressão)
-_MIN_GEMINI_INTERVAL = (60.0 / _GEMINI_RPM) * _GEMINI_CALLS_PER_CHAT
+# Gemini calls (HyDE, reformulations, final generation) plus 1 judge call = 4
+# total per row. When Gemini fails fast (429), requests cycle at the rate of
+# 1 per _MIN_GEMINI_INTERVAL, so the effective RPM = 4/_MIN_GEMINI_INTERVAL*60.
+# Setting CALLS_PER_ROW=5 (with 1-call safety margin) gives 20s minimum
+# interval → 4 calls / 20s = 12 RPM, safely under the 15 RPM limit even when
+# all backend calls fail instantly.
+_GEMINI_CALLS_PER_ROW = 5  # 3 backend (HyDE + multi-query + generation) + 1 judge + 1 margin
+_MIN_GEMINI_INTERVAL = (60.0 / _GEMINI_RPM) * _GEMINI_CALLS_PER_ROW
 _last_gemini_call = 0.0
 
 

@@ -454,7 +454,7 @@ Q04 (distribuição de cotas por área do conhecimento — tabela) subiu de 3.0 
 ## Configuração atual em produção
 
 ```sql
--- Estado de rag_config (id=1) — 2026-06-16 (pós Passo 6)
+-- Estado de rag_config (id=1) — 2026-06-16 (pós Passo 8)
 parent_child_expansion_enabled = true
 hyde_enabled                   = true
 multiquery_enabled             = true
@@ -471,17 +471,22 @@ embedding_provider             = local
 embedding_model                = bge-m3:latest
 ```
 
+```env
+# .env — Passo 8
+RERANKER_MODEL=/app/models/reranker-propesqi   # fine-tunado no domínio PROPESQI/UFPI
+```
+
 ---
 
-## Questões ainda problemáticas (pós Passo 5)
+## Questões ainda problemáticas
 
-| ID | Programa | Passo 5 | Causa identificada |
-|---|---|---|---|
-| Q05 | PIBIC / PIBIC-Af | 0.2 | Reranker prioriza chunk "concessão bolsas" sobre chunk "vigência bolsas" dentro do mesmo edital — filtro doc_type não alcança |
-| Q25 | Geral | 0.8 | Confusão entre data de vigência do edital e data de início das bolsas |
-| Q26 | Geral | 0.5 | Cross-encoder descarta menção ao SIGAA; fallback retornado |
-| Q29 | Geral | 0.5 | Cross-encoder falha em chunks de conflito de interesses; fallback retornado |
-| Q14 | ICV | 3.5 | Prazo em tabela de cronograma — parcialmente recuperado, sem a data exata |
+| ID | Programa | Passo 5 | Passo 8 (smoke) | Status | Causa identificada |
+|---|---|---|---|---|---|
+| Q05 | PIBIC / PIBIC-Af | 0.2 | **2.1** | ⚠️ melhorou mas ainda ruim | Fine-tuning ajudou mas "vigência das bolsas" ainda concorre com "vigência do edital" no mesmo chunk |
+| Q25 | Geral | 0.8 | — | pendente | Confusão entre data de vigência do edital e data de início das bolsas |
+| Q26 | Geral | 0.5 | **4.5** | ✅ resolvido (Passo 8) | Cross-encoder descartava menção ao SIGAA; fine-tuning corrigiu ranking |
+| Q29 | Geral | 0.5 | **5.0** | ✅ resolvido (Passo 8) | Cross-encoder falhava em chunks de conflito de interesses; fine-tuning corrigiu |
+| Q14 | ICV | 3.5 | — | pendente | Prazo em tabela de cronograma — parcialmente recuperado, sem a data exata |
 
 ---
 
