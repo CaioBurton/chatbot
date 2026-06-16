@@ -80,3 +80,6 @@ Thumbs.db
 .DS_Store
 ehthumbs.db
 desktop.ini
+
+# Fine-tuned model weights (large binary — store outside git)
+backend/models/

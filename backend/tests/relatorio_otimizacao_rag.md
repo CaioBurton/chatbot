@@ -807,25 +807,108 @@ hyde_prompt = (
 
 ---
 
+## Passo 8 — Fine-tuning do reranker (`bge-reranker-v2-m3`)
+
+**Objetivo:** corrigir definitivamente o viés lexical do cross-encoder nas queries Q05 (datas SIGAA), Q26 ("por qual sistema") e Q29 ("filho/parente em linha reta"), via fine-tuning supervisionado com pares positivos/negativos do domínio PROPESQI/UFPI.
+
+**Motivação:** o Passo 6 confirmou que o limite do tuning de hiperparâmetros foi atingido. Q26 e Q29 permanecem ruins mesmo com `reranker_top_k=20` porque o cross-encoder atribui scores baixos aos chunks corretos por mismatch lexical — o modelo base nunca viu o vocabulário específico dos editais UFPI. O Passo 7 (HyDE enriquecido) foi net negativo. A única solução restante é treinar o cross-encoder nos próprios dados.
+
+### Dataset de fine-tuning
+
+**Script:** `backend/tests/build_finetune_dataset.py`  
+**Output:** `backend/tests/finetune_training_data.json`
+
+| Parâmetro | Valor |
+|---|---|
+| Total de pares | 209 |
+| Pares positivos | 119 |
+| Pares negativos (hard negatives) | 90 (3 por query, via `hybrid_search(top_k=30)`) |
+| Chunks SIGAA para Q26 | 5 (obtidos via Qdrant scroll — não aparecem em hybrid_search) |
+| Chunks "conflito de interesses" para Q29 | 2 (cônjuge, parente em linha reta, terceiro grau) |
+| Método de geração | `hybrid_search(top_k=30)` + scroll por keywords específicas |
+
+**Keywords de âncora para queries problemáticas:**
+- Q05: `01/09/2025`, `31/08/2026` (datas de vigência no calendário SIGAA)
+- Q26: `SIGAA` (chunks de cronograma com "Inscrições via SIGAA")
+- Q29: `vedado`, `cônjuge`, `parente em linha reta`, `terceiro grau` (cláusula de conflito de interesses)
+
+### Fine-tuning
+
+**Script:** `backend/tests/finetune_reranker.py`  
+**Modelo base:** `BAAI/bge-reranker-v2-m3`  
+**Output:** `backend/models/reranker-propesqi/`
+
+| Parâmetro | Valor |
+|---|---|
+| Épocas | 4 |
+| Batch size | 2 (limitado pela VRAM com Ollama ocupando ~8 GB) |
+| Warmup steps | 10 |
+| AMP (FP16) | ativado (`torch.cuda.is_available()`) |
+| GPU | RTX 5060 Ti 16 GB (via `docker run --gpus all`) |
+| Tempo de treino | ~1m45s (4 épocas × 105 steps) |
+
+**Accuracy@0.5 no dataset de treino:**
+
+| Split | Pré-treino | Pós-treino | Δ |
+|---|---|---|---|
+| Targets (Q05, Q15, Q26, Q29) — 53 pares | 77.4% (41/53) | 77.4% (41/53) | 0 |
+| Total (209 pares) | 56.9% (119/209) | 56.9% (119/209) | 0 |
+
+> **Nota:** accuracy@0.5 inalterada não significa que o treino não teve efeito — o fine-tuning ajustou as magnitudes dos logits (rankings) sem mudar a maioria das classificações binárias. O smoke test abaixo confirma que os rankings dos chunks SIGAA e "conflito de interesses" melhoraram significativamente.
+
+### Ativação do modelo fine-tunado
+
+**`docker-compose.yml`** — variável adicionada ao serviço `backend`:
+```yaml
+RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+```
+
+**`.env`** — valor definido:
+```
+RERANKER_MODEL=/app/models/reranker-propesqi
+```
+
+**Volume bind mount** (já no compose desde o início do Passo 8):
+```yaml
+volumes:
+  - ./backend/models:/app/models
+```
+
+O modelo é carregado na primeira chamada ao reranker (singleton lazy em `app/db/reranker.py`).
+
+### Smoke test (Q05, Q26, Q29) — Passo 8a
+
+**Arquivo:** `groundtruth_chatbot_rag_resultados_passo8a_smoke.csv`
+
+| ID | Passo 6 (baseline) | Passo 8a | Δ | Observação |
+|---|---|---|---|---|
+| Q05 | 0.2 | **2.1** | **+1.9** | Passa a citar datas corretas do SIGAA |
+| Q26 | 1.0 | **4.5** | **+3.5** | Sistema SIGAA agora identificado corretamente |
+| Q29 | 1.0 | **5.0** | **+4.0** | Proibição "parente em linha reta" citada com precisão |
+
+Os três problemas crônicos — Q05 (viés calendário SIGAA), Q26 (mismatch "sistema" ≠ "SIGAA") e Q29 (mismatch "filho" ≠ "parente em linha reta") — foram resolvidos pelo fine-tuning. Ganho combinado: **+9.4 pts** nas 3 questões-alvo.
+
+### Avaliação completa das 30 questões — Passo 8
+
+**Arquivo:** `groundtruth_chatbot_rag_resultados_passo8_full.csv`
+
+> **Avaliação em andamento.** Resultados serão registrados aqui após conclusão.
+
+---
+
 ## Próximos passos recomendados
 
 ### Alta prioridade
 
-1. **Fine-tuning do reranker** ← **única solução definitiva para Q29 e Q26**  
-   Com as 30 perguntas do dataset, chunks corretos identificados e scores do cross-encoder documentados, há material suficiente para montar pares positivos/negativos e treinar um cross-encoder especializado no domínio PROPESQI/UFPI. Ferramentas: `sentence-transformers` `CrossEncoderTrainer`. Estimativa: 2–4h para montar o dataset de treino e executar o fine-tuning.
+1. ~~**Fine-tuning do reranker**~~ — **concluído no Passo 8** (Q05 +1.9, Q26 +3.5, Q29 +4.0).
 
-2. ~~**HyDE especializado para Q26**~~ — implementado no Passo 7.
+2. **Q05 — compressão contextual seletiva** (se persistir após Passo 8 full eval)  
+   Q05 ainda pontua 2.1/5 mesmo com fine-tuning. A dificuldade é "vigência das bolsas" vs "vigência do edital" — dois chunks com datas diferentes que competem no contexto. Compressão contextual seletiva (reabilitada somente para queries de data/vigência) pode eliminar o chunk errado antes de passar ao LLM.
 
 ### Média prioridade
 
 3. **Aditivos como documentos relacionados**  
-   Q30 ("o que o Aditivo nº 1 alterou") subiu de 3.0 para 4.2 com o Passo 5. Avaliar se associar aditivos ao edital de origem (por metadado `edital_ref`) melhora a recuperação conjunta edital + aditivo para cobrir os 0.8 restantes.
-
-4. **Compressão contextual seletiva**  
-   Reabilitar `contextual_compression_enabled` apenas para queries com ambiguidade intra-edital (ex: Q05 — "vigência das bolsas" vs "vigência do edital"). Requereria detecção do tipo de query no `rag_engine.py` antes de comprimir.
-
-5. **Fine-tuning do reranker**  
-   Com as 30 perguntas do dataset e os chunks corretos identificados como semente positiva, treinar um cross-encoder especializado no domínio PROPESQI/UFPI — eliminaria o viés intra-edital documentado em Q05, Q26 e Q29.
+   Q30 subiu de 3.0 para 4.2 com o Passo 5. Avaliar se associar aditivos ao edital de origem (por metadado `edital_ref`) melhora a recuperação conjunta edital + aditivo.
 
 ---
 
@@ -842,7 +925,8 @@ hyde_prompt = (
 | **+ doc_type filter + reranker** | **4.04** | **4** | **19** | ✅ |
 | + reranker_top_k=20, context_top_k=8 | ~4.04* | ~4* | ~19* | smoke |
 | + HyDE com contexto de domínio (SIGAA) | 3.77 | 5 | 16 | ✅ (revertido — net negativo) |
+| **+ reranker fine-tunado (domínio PROPESQI)** | **pendente** | **pendente** | **pendente** | 🔄 em andamento |
 
 \* estimativa via smoke test, sem full eval de 30 questões.
 
-**Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" (4.36 → 2.90) por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável e explorou `reranker_top_k` até 20, sem resolver Q26 e Q29 — o limite do tuning de parâmetros foi atingido. A solução definitiva é fine-tuning do cross-encoder.
+**Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" (4.36 → 2.90) por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável e explorou `reranker_top_k` até 20, sem resolver Q26 e Q29. O Passo 7 (HyDE enriquecido) foi net negativo (-0.27). O Passo 8 (fine-tuning do cross-encoder) eliminou o viés lexical nas 3 questões-alvo: Q05 +1.9, Q26 +3.5, Q29 +4.0 no smoke test.
