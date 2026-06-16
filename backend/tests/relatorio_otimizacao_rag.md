@@ -378,17 +378,76 @@ Todos os documentos foram reindexados pelo usuário com o tipo correto via modal
 
 Q04 (distribuição de cotas por área do conhecimento — tabela) subiu de 3.0 para 5.0: a resposta passou de 413 para 1071 chars, cobrindo a fórmula proporcional completa. Com as portarias excluídas do pool, o reranker conseguiu surfaçar o chunk correto do edital.
 
-### Status
+### Avaliação completa (30 questões) — 2026-06-16
 
-**Avaliação completa de 30 questões NÃO realizada** — cota gratuita da API Gemini esgotada durante o smoke test. A cota gratuita (`gemini-3.1-flash-lite` free tier) reseta a cada 24h. Quando resetar, basta rodar:
+**Arquivo:** `groundtruth_chatbot_rag_resultados_passo5_full.csv`
 
-```bash
-cd backend/
-python tests/run_groundtruth_eval.py \
-  --output tests/groundtruth_chatbot_rag_resultados_passo5_full.csv
-```
+**Por questão:**
 
-O script já está configurado com `_GEMINI_CALLS_PER_CHAT = 3` (intervalo mínimo 12 s por pergunta, respeitando RPM=15).
+| ID | Programa | Passo 3 | Passo 5 | Δ |
+|---|---|---|---|---|
+| Q01 | PIBIC / PIBIC-Af | 5.0 | 5.0 | — |
+| Q02 | PIBIC / PIBIC-Af | 3.5 | 3.6 | +0.1 |
+| Q03 | PIBIC / PIBIC-Af | 4.5 | 4.0 | -0.5 |
+| Q04 | PIBIC / PIBIC-Af | 3.0 | **5.0** | +2.0 ✅ |
+| Q05 | PIBIC / PIBIC-Af | 5.0 | 0.2 | **-4.8** ❌ |
+| Q06 | PIBIC / PIBIC-Af | 5.0 | 5.0 | — |
+| Q07 | PIBIC / PIBIC-Af | 5.0 | 5.0 | — |
+| Q08 | PIBIC / PIBIC-Af | 4.5 | 4.8 | +0.3 |
+| Q09 | PIBIC / PIBIC-Af | 5.0 | 5.0 | — |
+| Q10 | PIBIC / PIBIC-Af | 4.5 | 4.8 | +0.3 |
+| Q11 | ICV | 4.0 | 4.0 | — |
+| Q12 | ICV | 5.0 | 5.0 | — |
+| Q13 | ICV | 0.0 | **4.5** | +4.5 ✅ |
+| Q14 | ICV | 3.5 | 3.5 | — |
+| Q15 | ICV | 0.0 | **5.0** | +5.0 ✅ |
+| Q16 | PIBITI / ITV | 5.0 | 4.8 | -0.2 |
+| Q17 | PIBITI / ITV | 5.0 | 5.0 | — |
+| Q18 | PIBITI / ITV | 3.5 | 3.5 | — |
+| Q19 | PIBITI / ITV | 4.3 | 4.3 | — |
+| Q20 | PIBICEM (PIBIC-EM) | 5.0 | 4.8 | -0.2 |
+| Q21 | PIBICEM (PIBIC-EM) | 4.5 | 4.5 | — |
+| Q22 | PIBICEM (PIBIC-EM) | 4.5 | 4.5 | — |
+| Q23 | PIBICEM (PIBIC-EM) | 5.0 | 5.0 | — |
+| Q24 | Geral | 4.5 | 4.5 | — |
+| Q25 | Geral | 4.5 | 0.8 | **-3.7** ❌ |
+| Q26 | Geral | 4.2 | 0.5 | **-3.7** ❌ |
+| Q27 | Geral | 4.8 | 4.8 | — |
+| Q28 | Geral | 5.0 | 5.0 | — |
+| Q29 | Geral | 4.8 | 0.5 | **-4.3** ❌ |
+| Q30 | Geral | 3.0 | **4.2** | +1.2 ✅ |
+
+**Métricas gerais:**
+
+| Métrica | Baseline | Passo 3 | Passo 5 | Δ vs baseline |
+|---|---|---|---|---|
+| **Pontuação média** | **3.63** | **4.09** | **4.04** | **+0.41** |
+| Corretude factual | 0.77 | 0.88 | 0.87 | +0.10 |
+| Completude | 0.67 | 0.77 | 0.76 | +0.09 |
+| Citação de fonte | 0.84 | 0.85 | 0.87 | +0.03 |
+| Sem alucinação | 0.93 | 0.93 | 0.93 | 0.00 |
+| Relevância | 0.78 | 0.88 | 0.87 | +0.09 |
+| Respostas excelentes (≥ 4.5) | 19 | 21 | **19** | — |
+| Respostas ruins (< 2.5) | 7 | 3 | **4** | -3 |
+
+**Por programa:**
+
+| Programa | Baseline | Passo 3 | Passo 5 | Δ vs Passo 3 |
+|---|---|---|---|---|
+| ICV | 2.00 | 2.00 | **4.40** | +2.40 ✅ |
+| PIBICEM (PIBIC-EM) | 3.62 | 4.83 | 4.70 | -0.13 |
+| PIBITI / ITV | 4.55 | 4.42 | 4.40 | -0.02 |
+| PIBIC / PIBIC-Af | 4.45 | 4.51 | 4.24 | -0.27 |
+| **Geral** | **3.11** | **4.36** | **2.90** | **-1.46** ❌ |
+
+**Diagnóstico das regressões no grupo "Geral":**
+
+- **Q05** (vigência das bolsas PIBIC — 5.0 → 0.2): o reranker priorizou chunks de "concessão de bolsas/benefícios" acima do trecho de vigência 01/09/2025–31/08/2026. Mesmo viés documentado no Passo 2 — o filtro `doc_type` não resolve porque ambos os chunks pertencem ao mesmo edital (tipo `edital`).
+- **Q26** (sistema SIGAA — 4.2 → 0.5): retorna fallback (148 chars). Em Passo 3 (sem reranker) era recuperado corretamente via RRF puro. Com o reranker ativo, o cross-encoder descarta o chunk que menciona SIGAA.
+- **Q29** (conflito de interesses, orientar filho — 4.8 → 0.5): mesmo padrão de Q26 — fallback com reranker ativo.
+- **Q25** (data início vigência de todos os programas — 4.5 → 0.8): resposta parcial, confunde datas de vigência do edital com início das bolsas.
+
+**Conclusão:** o filtro `doc_type` resolveu o problema ICV (+2.40) mas não eliminou o viés do reranker dentro do mesmo tipo de documento (`edital`). Q26 e Q29 — que haviam melhorado no Passo 3 sem reranker — regridem novamente. A média global ficou em 4.04 vs 4.09 do Passo 3 (net wash de -0.05).
 
 ---
 
@@ -413,34 +472,113 @@ embedding_model                = bge-m3:latest
 
 ---
 
-## Questões ainda problemáticas (estimativa pré-full-eval)
+## Questões ainda problemáticas (pós Passo 5)
 
-| ID | Programa | Nota passo 3 | Causa identificada | Expectativa passo 5 |
-|---|---|---|---|---|
-| Q13 | ICV | 0.0–4.5 (varia) | Chunk correto não estável no top-5 sem reranker | Melhora com reranker + portarias filtradas |
-| Q14 | ICV | 3.5 | Prazo em tabela de cronograma — compressor descartaria | Mantém ou melhora (compression=false) |
-| Q15 | ICV | 0.0–5.0 (varia) | Mesmo padrão de Q13 | Melhora com reranker |
-| Q04 | PIBIC | 3.0 | Chunk de tabela de cotas por área | **Confirmado 5.0 no smoke test** |
+| ID | Programa | Passo 5 | Causa identificada |
+|---|---|---|---|
+| Q05 | PIBIC / PIBIC-Af | 0.2 | Reranker prioriza chunk "concessão bolsas" sobre chunk "vigência bolsas" dentro do mesmo edital — filtro doc_type não alcança |
+| Q25 | Geral | 0.8 | Confusão entre data de vigência do edital e data de início das bolsas |
+| Q26 | Geral | 0.5 | Cross-encoder descarta menção ao SIGAA; fallback retornado |
+| Q29 | Geral | 0.5 | Cross-encoder falha em chunks de conflito de interesses; fallback retornado |
+| Q14 | ICV | 3.5 | Prazo em tabela de cronograma — parcialmente recuperado, sem a data exata |
+
+---
+
+## Tempo de resposta do chatbot
+
+**Arquivo:** `groundtruth_chatbot_rag_resultados_passo5_timing.csv` (2026-06-16, configuração Passo 5)  
+**Medição:** tempo total de `/chat/stream` (HyDE + multi-query + hybrid search + reranker + geração SSE), excluindo a espera de rate limiting entre questões.
+
+### Estatísticas gerais (30 questões)
+
+| Métrica | Valor |
+|---|---|
+| Média | 29.4 s |
+| Mínimo | 23.0 s |
+| Máximo | 43.0 s |
+| p50 (mediana) | 27.9 s |
+| p90 | 39.0 s |
+| p95 | 41.7 s |
+
+### Por programa
+
+| Programa | Tempo médio |
+|---|---|
+| PIBITI / ITV | 25.6 s |
+| Geral | 28.0 s |
+| ICV | 28.4 s |
+| PIBICEM (PIBIC-EM) | 30.3 s |
+| PIBIC / PIBIC-Af | 32.1 s |
+
+### Por questão
+
+| ID | Tempo (s) | Score | Programa |
+|---|---|---|---|
+| Q21 | 23.0 | 4.5 | PIBICEM |
+| Q17 | 23.2 | 5.0 | PIBITI |
+| Q09 | 23.3 | 5.0 | PIBIC |
+| Q14 | 24.1 | 3.5 | ICV |
+| Q16 | 24.4 | 4.8 | PIBITI |
+| Q08 | 24.5 | 4.5 | PIBIC |
+| Q05 | 24.8 | 0.2 | PIBIC |
+| Q06 | 25.5 | 5.0 | PIBIC |
+| Q18 | 28.3 | 3.5 | PIBITI |
+| Q19 | 26.6 | 5.0 | PIBITI |
+| Q23 | 26.7 | 5.0 | PIBICEM |
+| Q15 | 27.1 | 0.5 | ICV |
+| Q03 | 27.9 | 4.3 | PIBIC |
+| Q27 | 24.9 | 4.8 | Geral |
+| Q24 | 25.8 | 4.8 | Geral |
+| Q25 | 25.3 | 0.8 | Geral |
+| Q11 | 25.4 | 4.5 | ICV |
+| Q28 | 29.7 | 5.0 | Geral |
+| Q29 | 30.4 | 0.5 | Geral |
+| Q26 | 30.3 | 0.5 | Geral |
+| Q30 | 29.6 | 4.6 | Geral |
+| Q20 | 32.3 | 4.8 | PIBICEM |
+| Q12 | 31.0 | 4.8 | ICV |
+| Q13 | 34.4 | 4.5 | ICV |
+| Q01 | 33.1 | 5.0 | PIBIC |
+| Q22 | 39.0 | 4.5 | PIBICEM |
+| Q02 | 39.0 | 3.6 | PIBIC |
+| Q10 | 38.2 | 4.1 | PIBIC |
+| Q04 | 41.7 | 5.0 | PIBIC |
+| Q07 | 43.0 | 5.0 | PIBIC |
+
+### Análise
+
+**Faixa de latência:** 23–43 s end-to-end. A variação é dominada principalmente pelo comprimento da resposta gerada (Q07 = 43 s com resposta extensa; Q09 = 23 s com resposta curta de 116 chars). Não há correlação entre latência e score — questões com fallback (0.5/5) são tão rápidas quanto questões bem respondidas, pois o fallback é gerado igualmente pelo LLM após o pipeline completo.
+
+**Decomposição estimada por etapa** (com HyDE + multi-query + reranker ativos):
+- HyDE (1 chamada Gemini): ~5–8 s
+- Multi-query (1 chamada Gemini): ~5–8 s
+- Hybrid search + reranker (CPU local): ~1–3 s
+- Geração final (1 chamada Gemini, streaming): ~10–25 s (varia com tamanho da resposta)
+
+**Impacto das configurações na latência:** a configuração atual (HyDE + multi-query + reranker) dispara **3 chamadas sequenciais à API Gemini** por consulta. Desabilitar HyDE ou multi-query reduziria a latência em ~5–8 s cada. Sem ambos (configuração Passo 3), a latência estimada seria ~15–25 s (apenas geração + search local).
+
+**Referência de usabilidade:** latências acima de 10–15 s costumam ser percebidas como lentas em interfaces conversacionais. O streaming SSE atenua a percepção do usuário (os primeiros tokens aparecem mais cedo), mas o tempo até o primeiro token ainda inclui o custo de HyDE + multi-query + reranker (~12–19 s) antes de iniciar a geração.
 
 ---
 
 ## Próximos passos recomendados
 
-### Imediato (quando a cota Gemini resetar)
+### Alta prioridade — regressões identificadas no Passo 5
 
-1. **Rodar avaliação completa** (`--output groundtruth_chatbot_rag_resultados_passo5_full.csv`)
-2. **Atualizar este relatório** com os resultados e a tabela de evolução
+1. **Investigar Q05, Q26, Q29** — as três questões regridem com o reranker ativo mesmo após o filtro `doc_type`. Verificar via inspeção direta (`rerank()` com `score_threshold=0.0`) se o cross-encoder coloca o chunk correto fora do top-5. Se confirmado, a causa é viés intra-edital do modelo — não resolvível por parâmetros.
+
+2. **Avaliar desabilitar o reranker seletivamente** — dado que Passo 3 (sem reranker) produziu 4.09 vs Passo 5 (com reranker) 4.04, considerar uma estratégia híbrida: reranker ativo apenas para queries ICV (onde o ganho é +2.40), desabilitado para queries do grupo "Geral".
 
 ### Média prioridade
 
 3. **Aditivos como documentos relacionados**  
-   Q30 ("o que o Aditivo nº 1 alterou") pontuou 3.0 no Passo 3. Os chunks de aditivos foram reindexados com `doc_type="aditivo"` mas não são excluídos do pool. Avaliar se associar aditivos ao edital de origem (por metadado `edital_ref`) melhora a recuperação conjunta edital + aditivo.
+   Q30 ("o que o Aditivo nº 1 alterou") subiu de 3.0 para 4.2 com o Passo 5. Avaliar se associar aditivos ao edital de origem (por metadado `edital_ref`) melhora a recuperação conjunta edital + aditivo para cobrir os 0.8 restantes.
 
 4. **Compressão contextual seletiva**  
-   Reabilitar `contextual_compression_enabled` apenas para queries onde o contexto é explicitamente ambíguo (ex: Q05 — "vigência das bolsas" vs "vigência do edital"). Isso requereria lógica no `rag_engine.py` para detectar o tipo de query antes de comprimir.
+   Reabilitar `contextual_compression_enabled` apenas para queries com ambiguidade intra-edital (ex: Q05 — "vigência das bolsas" vs "vigência do edital"). Requereria detecção do tipo de query no `rag_engine.py` antes de comprimir.
 
 5. **Fine-tuning do reranker**  
-   Com as 30 perguntas do dataset e os chunks corretos identificados como semente positiva, treinar um cross-encoder especializado no domínio PROPESQI/UFPI.
+   Com as 30 perguntas do dataset e os chunks corretos identificados como semente positiva, treinar um cross-encoder especializado no domínio PROPESQI/UFPI — eliminaria o viés intra-edital documentado em Q05, Q26 e Q29.
 
 ---
 
@@ -454,6 +592,8 @@ embedding_model                = bge-m3:latest
 | + HyDE + multiquery + reranker | ~3.5* | ~7* | ~17* | smoke |
 | **+ HyDE + multiquery (sem reranker)** | **4.09** | **3** | **21** | ✅ |
 | + compressão contextual | <4.09* | — | — | smoke (revertido) |
-| **+ doc_type filter + reranker** | **?** | **?** | **?** | **⏳ aguarda cota Gemini** |
+| **+ doc_type filter + reranker** | **4.04** | **4** | **19** | ✅ |
 
 \* estimativa via smoke test, sem full eval de 30 questões.
+
+**Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" (4.36 → 2.90) por viés intra-edital do reranker em Q05, Q26 e Q29. A média global de 4.04 é praticamente idêntica ao Passo 3 (4.09), sendo a principal diferença a redistribuição dos ganhos e perdas entre programas.

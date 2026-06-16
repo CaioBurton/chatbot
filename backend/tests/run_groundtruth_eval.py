@@ -72,6 +72,7 @@ def _rate_limit_gemini() -> None:
 FIELDNAMES = [
     "id", "programa", "categoria", "dificuldade", "tipo_resposta", "pergunta",
     "resposta_esperada", "palavras_chave", "fonte", "resposta_chatbot",
+    "tempo_resposta_s",
     "corretude_factual_0_1", "completude_0_1", "citacao_fonte_0_1",
     "alucinacao_1_sem_0_com", "relevancia_0_1", "pontuacao_total_0_5",
     "observacoes_avaliador",
@@ -236,19 +237,22 @@ def main() -> int:
             qid = row["id"]
             print(f"[{qid}] Pergunta: {row['pergunta'][:80]}...")
 
+            t0 = time.monotonic()
             try:
                 answer, sources = _request_with_retries(
                     call_chat_stream, client, args.base_url, row["pergunta"]
                 )
+                row["tempo_resposta_s"] = round(time.monotonic() - t0, 2)
             except Exception as exc:
                 print(f"[{qid}] ERRO no /chat/stream: {exc}", file=sys.stderr)
                 row["resposta_chatbot"] = ""
+                row["tempo_resposta_s"] = ""
                 row["observacoes_avaliador"] = f"ERRO /chat/stream: {exc}"
                 results.append(row)
                 continue
 
             row["resposta_chatbot"] = answer
-            print(f"[{qid}] Resposta ({len(answer)} chars): {answer[:120]}...")
+            print(f"[{qid}] Resposta ({len(answer)} chars, {row['tempo_resposta_s']}s): {answer[:120]}...")
 
             try:
                 scores = _request_with_retries(call_gemini_judge, client, row, answer, sources)
