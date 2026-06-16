@@ -144,7 +144,7 @@ export default function UploadZone({ onUploaded }: Props) {
   // doesn't flicker when the cursor passes over child elements.
   const dragCounter = useRef(0)
 
-  const uploadFile = (file: File, displayName: string, sourceUrl: string) => {
+  const uploadFile = (file: File, displayName: string, sourceUrl: string, docType: string) => {
     // Use crypto.randomUUID when available, fall back to timestamp+random.
     const id =
       typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -195,6 +195,7 @@ export default function UploadZone({ onUploaded }: Props) {
     form.append('file', file)
     if (displayName) form.append('display_name', displayName)
     if (sourceUrl) form.append('source_url', sourceUrl)
+    form.append('doc_type', docType)
     xhr.open('POST', `${API_BASE}/documents/upload`)
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.send(form)
@@ -217,9 +218,9 @@ export default function UploadZone({ onUploaded }: Props) {
     if (accepted.length > 0) setPending(prev => [...prev, ...accepted])
   }
 
-  const handleModalConfirm = (displayName: string, sourceUrl: string) => {
+  const handleModalConfirm = (displayName: string, sourceUrl: string, docType: string) => {
     const [file, ...rest] = pending
-    uploadFile(file, displayName, sourceUrl)
+    uploadFile(file, displayName, sourceUrl, docType)
     setPending(rest)
   }
 

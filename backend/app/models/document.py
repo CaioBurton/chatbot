@@ -23,6 +23,7 @@ class Document(Base):
     original_name = Column(Text, nullable=False)
     display_name = Column(Text, nullable=True)
     source_url = Column(Text, nullable=True)
+    doc_type = Column(Text, nullable=False, server_default="edital")
     file_hash = Column(Text, nullable=False, unique=True)
     file_type = Column(Text, nullable=False)
     ocr_applied = Column(Boolean, nullable=False, default=False, server_default="false")

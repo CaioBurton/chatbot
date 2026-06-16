@@ -37,7 +37,20 @@ from app.db.rag_config import get_rag_config
 from app.db.reranker import rerank
 from app.db.search import expand_to_parents, hybrid_search
 from app.models.chat import ChatMessage, ChatSession
-from qdrant_client.models import ScoredPoint
+from qdrant_client.models import FieldCondition, Filter, MatchAny, ScoredPoint
+
+# Exclude non-editorial document types from RAG retrieval by default.
+# Portarias list program names (causing the reranker to surface them for
+# content questions), and relatorios contain project-specific data not
+# relevant to Q&A about edital rules.
+_RAG_PAYLOAD_FILTER = Filter(
+    must_not=[
+        FieldCondition(
+            key="doc_type",
+            match=MatchAny(any=["portaria", "relatorio"]),
+        )
+    ]
+)
 
 logger = logging.getLogger(__name__)
 
@@ -539,6 +552,7 @@ async def rag_stream(
                 q,
                 top_k=rag_cfg.search_top_k,
                 score_threshold=rag_cfg.search_score_threshold,
+                payload_filter=_RAG_PAYLOAD_FILTER,
                 embedding_provider=embedding_provider,
                 embedding_model=embedding_model,
             )

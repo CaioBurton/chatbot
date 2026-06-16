@@ -1,20 +1,30 @@
 import { useState, type FormEvent } from 'react'
 import { X } from 'lucide-react'
 
+const DOC_TYPE_OPTIONS = [
+  { value: 'edital',    label: 'Edital' },
+  { value: 'aditivo',   label: 'Aditivo' },
+  { value: 'resolucao', label: 'Resolução' },
+  { value: 'tutorial',  label: 'Tutorial' },
+  { value: 'portaria',  label: 'Portaria' },
+  { value: 'relatorio', label: 'Relatório' },
+]
+
 interface Props {
   fileName: string
   remaining: number
-  onConfirm: (displayName: string, sourceUrl: string) => void
+  onConfirm: (displayName: string, sourceUrl: string, docType: string) => void
   onCancel: () => void
 }
 
 export default function UploadMetadataModal({ fileName, remaining, onConfirm, onCancel }: Props) {
   const [displayName, setDisplayName] = useState('')
   const [sourceUrl, setSourceUrl] = useState('')
+  const [docType, setDocType] = useState('edital')
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
-    onConfirm(displayName.trim(), sourceUrl.trim())
+    onConfirm(displayName.trim(), sourceUrl.trim(), docType)
   }
 
   return (
@@ -38,6 +48,19 @@ export default function UploadMetadataModal({ fileName, remaining, onConfirm, on
         </p>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1 text-xs text-[#555] dark:text-[#aaa]">
+            Tipo do documento
+            <select
+              value={docType}
+              onChange={e => setDocType(e.target.value)}
+              className="rounded-lg border border-[#ccc] dark:border-[#555] bg-[#fafafa] dark:bg-[#2d2d2d] px-3 py-2 text-sm text-[#111] dark:text-[#e8e8e8] outline-none focus:border-[#0078d4]"
+            >
+              {DOC_TYPE_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </label>
+
           <label className="flex flex-col gap-1 text-xs text-[#555] dark:text-[#aaa]">
             Nome do documento
             <input

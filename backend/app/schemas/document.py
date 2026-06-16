@@ -13,6 +13,7 @@ class DocumentUploadResponse(BaseModel):
     original_name: str
     display_name: str
     source_url: str | None
+    doc_type: str
 
 
 class DocumentListItem(BaseModel):
@@ -22,6 +23,7 @@ class DocumentListItem(BaseModel):
     original_name: str
     display_name: str
     source_url: str | None
+    doc_type: str
     status: str
     file_type: str
     total_chunks: int | None
@@ -35,6 +37,7 @@ class DocumentDetail(BaseModel):
     original_name: str
     display_name: str
     source_url: str | None
+    doc_type: str
     status: str
     file_type: str
     ocr_applied: bool

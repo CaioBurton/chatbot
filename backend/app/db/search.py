@@ -130,6 +130,7 @@ def expand_to_parents(points: list[ScoredPoint]) -> list[dict]:
             # as float (e.g. 1.0) depending on JSON serialisation path.
             "page_number": int(payload.get("page_number") or 0),
             "score": point.score,
+            "doc_type": payload.get("doc_type", "edital"),
         }
 
         if parent_id not in seen or point.score > seen[parent_id]["score"]:

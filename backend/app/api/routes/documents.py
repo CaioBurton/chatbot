@@ -59,6 +59,7 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     display_name: str | None = Form(None),
     source_url: str | None = Form(None),
+    doc_type: str = Form("edital"),
     db: AsyncSession = Depends(get_db),
     _user=Depends(require_admin),
 ) -> DocumentUploadResponse:
@@ -130,6 +131,7 @@ async def upload_document(
         original_name=file.filename or sanitised_name,
         display_name=resolved_display_name,
         source_url=resolved_source_url,
+        doc_type=doc_type,
         file_hash=file_hash,
         file_type="pdf_native",
         ocr_applied=False,
@@ -151,6 +153,7 @@ async def upload_document(
         str(doc.id),
         str(file_path),
         file.filename or sanitised_name,
+        doc.doc_type,
     )
 
     return DocumentUploadResponse(
@@ -159,6 +162,7 @@ async def upload_document(
         original_name=doc.original_name,
         display_name=doc.display_name,
         source_url=doc.source_url,
+        doc_type=doc.doc_type,
     )
 
 
@@ -289,6 +293,7 @@ async def reindex_all_documents(
                 str(doc.id),
                 str(file_path),
                 doc.original_name,
+                doc.doc_type,
             )
             queued += 1
         else:
@@ -481,6 +486,7 @@ async def reindex_document(
         str(doc.id),
         str(file_path),
         doc.original_name,
+        doc.doc_type,
     )
 
     return DocumentUploadResponse(
@@ -489,6 +495,7 @@ async def reindex_document(
         original_name=doc.original_name,
         display_name=doc.display_name,
         source_url=doc.source_url,
+        doc_type=doc.doc_type,
     )
 
 
