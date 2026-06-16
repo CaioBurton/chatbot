@@ -17,6 +17,7 @@ class RagConfig(Base):
     search_score_threshold = Column(Float, nullable=False, default=0.0)
     reranker_top_k = Column(Integer, nullable=False, default=5)
     reranker_score_threshold = Column(Float, nullable=False, default=0.5)
+    context_top_k = Column(Integer, nullable=False, default=5)
     hyde_enabled = Column(Boolean, nullable=False, default=True)
     multiquery_enabled = Column(Boolean, nullable=False, default=True)
     reranker_enabled = Column(Boolean, nullable=False, default=True)

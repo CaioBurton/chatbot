@@ -214,6 +214,7 @@ ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS llm_model                      V
 ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS embedding_provider             VARCHAR(32) NOT NULL DEFAULT 'local'
     CONSTRAINT rag_config_embedding_provider_check CHECK (embedding_provider IN ('local', 'gemini'));
 ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS embedding_model                VARCHAR(128) NOT NULL DEFAULT 'bge-m3';
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS context_top_k                  INTEGER NOT NULL DEFAULT 5;
 
 INSERT INTO rag_config (id, parent_chunk_tokens, child_chunk_tokens, search_top_k,
                         search_score_threshold, reranker_top_k, reranker_score_threshold,

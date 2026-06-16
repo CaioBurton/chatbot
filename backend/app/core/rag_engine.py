@@ -595,12 +595,13 @@ async def rag_stream(
         # 6. Context assembly                                                 #
         # ------------------------------------------------------------------ #
         stage_start = time.perf_counter()
+        context_top_k: int = getattr(rag_cfg, "context_top_k", 5) or 5
         if rag_cfg.parent_child_expansion_enabled:
-            reranked_parents = expand_to_parents(reranked)[:5]
+            reranked_parents = expand_to_parents(reranked)[:context_top_k]
         else:
             reranked_parents = [
                 {**(pt.payload or {}), "score": pt.score}
-                for pt in reranked[:5]
+                for pt in reranked[:context_top_k]
             ]
 
         history_result = await db.execute(

@@ -19,6 +19,7 @@ async def get_rag_config(db: AsyncSession) -> RagConfig:
             search_score_threshold=0.0,
             reranker_top_k=5,
             reranker_score_threshold=0.5,
+            context_top_k=5,
             hyde_enabled=True,
             multiquery_enabled=True,
             reranker_enabled=True,

@@ -454,7 +454,7 @@ Q04 (distribuição de cotas por área do conhecimento — tabela) subiu de 3.0 
 ## Configuração atual em produção
 
 ```sql
--- Estado de rag_config (id=1) no momento do relatório
+-- Estado de rag_config (id=1) — 2026-06-16 (pós Passo 6)
 parent_child_expansion_enabled = true
 hyde_enabled                   = true
 multiquery_enabled             = true
@@ -462,8 +462,9 @@ reranker_enabled               = true    -- reabilitado (portarias filtradas por
 contextual_compression_enabled = false
 search_top_k                   = 30
 search_score_threshold         = 0.0
-reranker_top_k                 = 5
+reranker_top_k                 = 20     -- aumentado de 5 → 20 (Passo 6)
 reranker_score_threshold       = 0.5
+context_top_k                  = 8      -- novo parâmetro (Passo 6, antes hardcoded [:5])
 llm_provider                   = gemini
 llm_model                      = gemini-3.1-flash-lite
 embedding_provider             = local
@@ -561,13 +562,134 @@ embedding_model                = bge-m3:latest
 
 ---
 
+## Passo 6 — Diagnóstico direto do reranker (Q05, Q26, Q29)
+
+**Script:** `tests/reranker_debug.py` — roda dentro do container backend via `docker exec`.  
+Executa `hybrid_search(top_k=30)` + `rerank(threshold=0.0, top_k=30)` e imprime o ranking completo com scores, fonte, página e preview.
+
+### Resultados do diagnóstico
+
+**Q05 — "Vigência das bolsas PIBIC para o ciclo 2025/2026?"**
+
+| Pos | Rerank | Fonte | Pg | Preview |
+|---|---|---|---|---|
+| 1 | 0.730 | Edital Grad. | 1 | abre inscrições para as cotas de bolsas... |
+| **2** | **0.721** | **Edital Grad.** | **7** | **10.1.2 As bolsas PIBIC e PIBIC-Af/UFPI a serem definidas... para período** |
+| 3 | 0.714 | Edital Grad. | 7 | DOS BENEFÍCIOS CONCEDIDOS 10.1 Quanto à concessão de... |
+| 4 | 0.709 | Edital Ensino M. | 5 | Quanto à concessão de bolsas PIBIC-EM CNPq... |
+| 5 | 0.636 | Edital Grad. | 5 | **VIGÊNCIA DA PARTICIPAÇÃO VOLUNTÁRIA** A vigência é de 12 meses... |
+
+**Diagnóstico:** o chunk correto (p.7) **está na posição 2** — retrieval não é o problema. O chunk na **posição 5** é sobre vigência da participação *voluntária* (ICV), não das bolsas. O LLM confunde os dois trechos e responde com "vigência do edital" ao invés de "01/09/2025–31/08/2026". **Causa: ambiguidade no contexto, não falha de ranking.**
+
+---
+
+**Q26 — "Por qual sistema as inscrições e relatórios são realizados na UFPI?"**
+
+| Pos | Rerank | Fonte | Pg | Preview |
+|---|---|---|---|---|
+| 1 | 0.665 | Edital Ensino M. | 16 | Da formatação do documento: A CPESI/PROPESQI define que os relatórios... |
+| 2 | 0.662 | Edital Grad. | 17 | CPESI/PROPESQI define que os relatórios de ATIVIDADES... |
+| 3–5 | ~0.62 | Edital Grad./EM | 17/15/14 | ANEXO IV – Diretrizes para relatórios... |
+
+**Diagnóstico:** nenhum dos 30 candidatos menciona "SIGAA" no preview. A query abstrata ("por qual sistema") ativa chunks sobre *relatórios* (palavra presente na query) e *formatação de documentos*. O chunk com SIGAA que Q09 recuperou corretamente ("inscrições realizadas via SIGAA, de 11/03 a 08/04/2025") é surfaçado apenas quando a query menciona "prazo" ou "inscrições PIBIC 2025/2026" — contexto mais específico que aponta para a seção de cronograma. **Causa: mismatch semântico entre query abstrata e chunk de cronograma; HyDE não gera documento hipotético que mencione SIGAA pelo nome.**
+
+---
+
+**Q29 — "Professor pode orientar filho em programas de IC da UFPI?"**
+
+| Pos | Rerank | Fonte | Pg | Preview |
+|---|---|---|---|---|
+| 1 | 0.632 | Edital Grad. | 5 | (SIC) UFPI, por meio de pôster e/ou vídeo... |
+| 2 | 0.628 | Edital Ensino M. | 2 | 4.1.6 Orientar o(a) bolsista... |
+| 3 | 0.614 | Edital Ensino M. | 6 | Assegurar a participação dos orientandos no Seminário... |
+| 4 | 0.603 | Edital Ensino M. | 2 | orientando(a), a ser apresentado no Seminário... |
+| 5 | 0.545 | Edital Grad. | 1 | INSCRIÇÃO 3.1 Orientador(a) no PIBIC... |
+| ... | | | | |
+| **17** | **0.502** | **Edital Grad.** | **2** | **e conflitos de interesses, sendo vedado ao(à) orientador(a) conceder bolsa a côn...** |
+
+**Diagnóstico:** o chunk correto (cláusula de conflito de interesses, p.2) está na **posição 17** — além do corte `reranker_top_k=5`. O cross-encoder prioriza chunks que mencionam "orientar", "bolsista", "seminário" acima da cláusula sobre "cônjuge/filho". **Causa confirmada: viés do cross-encoder por similaridade lexical de termos de orientação; o chunk correto está no pool mas é excluído pelo top_k.**
+
+### Soluções identificadas após diagnóstico
+
+| Questão | Causa raiz confirmada | Solução |
+|---|---|---|
+| Q05 | LLM confunde chunk "vigência voluntária" (pos 5) com "vigência bolsas" (pos 2) — ambos no contexto | System prompt melhorado ou retirar pos 5 filtrando vigência de participação voluntária |
+| Q26 | SIGAA existe em 315 chunks; chunk relevante (cronograma PIBIC pg=9) não alinha com query abstrata "por qual sistema" | Reformulação semântica via HyDE com prompt mais específico, ou aumentar `search_top_k` |
+| Q29 | Chunk correto em pos 17 (score 0.502) — EXCLUÍDO por dupla barreira: `reranker_top_k` < 17 **e** `[:5]` hardcoded em `rag_engine.py:599` | Tornar `context_top_k` parâmetro configurável no `rag_config` + aumentar `reranker_top_k` para ≥ 18 |
+
+---
+
+## Passo 6 — Investigação e `context_top_k` configurável
+
+### Diagnóstico e tentativas de correção
+
+**Tentativa 6a — `reranker_top_k = 10`**
+
+| ID | Passo 5 | top_k=10 | Resultado |
+|---|---|---|---|
+| Q05 | 0.2 | 0.2 | — |
+| Q26 | 0.5 | 0.5 | — |
+| Q29 | 0.5 | 1.0 | variabilidade do juiz; resposta ainda fallback 148 chars |
+
+Sem melhora real.
+
+**Investigação profunda realizada:**
+
+**Q26 — SIGAA indexado mas não surfaçado:**
+`tests/sigaa_debug.py` (scroll completo no Qdrant) identificou **315 chunks** contendo "SIGAA". O chunk mais relevante é `1-2025-2026_Edital_PIBIC_e_PIBIC_Af.pdf` pg=9: *"Inscrições via SIGAA : de 11/03 a 08/04/2025"* (seção de cronograma). O problema é alinhamento semântico: a query "por qual sistema" não alinha com um chunk de cronograma que menciona SIGAA em contexto de data. Q09 ("qual o prazo para inscrições PIBIC?") recupera este chunk corretamente porque a query é concreta. A query abstrata de Q26 não gera HyDE com menção explícita a "SIGAA".
+
+**Q29 — dupla barreira para o chunk correto:**
+O chunk de conflito de interesses (p.2: *"vedado ao(à) orientador(a) conceder bolsa a cônjuge..."*) está em pos 17 (score 0.502) no ranking completo. Foram identificadas DUAS barreiras: (1) `reranker_top_k` < 17, e (2) `expand_to_parents(reranked)[:5]` hardcoded em `rag_engine.py:599` — o LLM recebia apenas 5 chunks independentemente do `top_k`.
+
+**Tentativa 6b — `context_top_k` configurável + `reranker_top_k = 20`**
+
+Implementação do parâmetro `context_top_k` (elimina o `[:5]` hardcoded):
+- `app/models/rag_config.py` — coluna `context_top_k INTEGER NOT NULL DEFAULT 5`
+- `app/db/rag_config.py` — default no fallback de criação
+- `app/core/rag_engine.py:598` — `context_top_k = getattr(rag_cfg, "context_top_k", 5)` substitui `[:5]`
+- `init/01_schema.sql` — migração idempotente adicionada
+- Container reconstruído com `docker compose build backend`
+
+```sql
+UPDATE rag_config SET reranker_top_k = 20, context_top_k = 8, updated_at = NOW() WHERE id = 1;
+```
+
+**Smoke test após rebuild (tentativa 6c):**
+
+| ID | Passo 5 | top_k=20 + ctx=8 | Resultado |
+|---|---|---|---|
+| Q05 | 0.2 | 0.2 | — |
+| Q26 | 0.5 | 1.0 | variabilidade do juiz; resposta ainda fallback |
+| Q29 | 0.5 | 1.0 | variabilidade do juiz; resposta ainda fallback |
+
+### Conclusão do Passo 6
+
+**Limite do tuning de parâmetros atingido.** Q26 e Q29 continuam retornando fallback com qualquer configuração de `reranker_top_k` e `context_top_k` testada:
+
+- **Q29**: o cross-encoder atribui score 0.502 (limiar do threshold) ao chunk de conflito de interesses. Por ser o score mais baixo dos 20 candidatos, após `expand_to_parents` o chunk de conflito fica fora dos top-8 pais. A causa é o viés lexical do modelo: a query menciona "filho" mas o chunk menciona "cônjuge" — ambos pertencem à mesma cláusula no edital, mas o cross-encoder não infere essa equivalência.
+- **Q26**: o chunk com "SIGAA" não alinha semanticamente com a query abstrata "por qual sistema" independentemente do `top_k`. O HyDE não gera texto hipotético com "SIGAA" por nome.
+
+O `context_top_k` como parâmetro configurável é uma melhoria permanente válida (beneficia outras queries e elimina o hardcoding), mas não é suficiente para corrigir o viés intra-domínio do cross-encoder nestas questões específicas.
+
+### Configuração final do Passo 6
+
+```sql
+-- context_top_k=8 mantido: mais contexto para o LLM sem custo significativo
+-- reranker_top_k=20 mantido: pool maior para deduplicação de pais
+reranker_top_k  = 20
+context_top_k   = 8
+```
+
 ## Próximos passos recomendados
 
-### Alta prioridade — regressões identificadas no Passo 5
+### Alta prioridade
 
-1. **Investigar Q05, Q26, Q29** — as três questões regridem com o reranker ativo mesmo após o filtro `doc_type`. Verificar via inspeção direta (`rerank()` com `score_threshold=0.0`) se o cross-encoder coloca o chunk correto fora do top-5. Se confirmado, a causa é viés intra-edital do modelo — não resolvível por parâmetros.
+1. **Fine-tuning do reranker** ← **única solução definitiva para Q29 e Q26**  
+   Com as 30 perguntas do dataset, chunks corretos identificados e scores do cross-encoder documentados, há material suficiente para montar pares positivos/negativos e treinar um cross-encoder especializado no domínio PROPESQI/UFPI. Ferramentas: `sentence-transformers` `CrossEncoderTrainer`. Estimativa: 2–4h para montar o dataset de treino e executar o fine-tuning.
 
-2. **Avaliar desabilitar o reranker seletivamente** — dado que Passo 3 (sem reranker) produziu 4.09 vs Passo 5 (com reranker) 4.04, considerar uma estratégia híbrida: reranker ativo apenas para queries ICV (onde o ganho é +2.40), desabilitado para queries do grupo "Geral".
+2. **HyDE especializado para Q26** — o HyDE atual gera um documento genérico sobre inscrições; um prompt que force a mencionar o nome do sistema ("As inscrições são realizadas via SIGAA em www.sigaa.ufpi.br") alinharia com os chunks de cronograma que contêm SIGAA.
+
+### Média prioridade
 
 ### Média prioridade
 
@@ -593,7 +715,8 @@ embedding_model                = bge-m3:latest
 | **+ HyDE + multiquery (sem reranker)** | **4.09** | **3** | **21** | ✅ |
 | + compressão contextual | <4.09* | — | — | smoke (revertido) |
 | **+ doc_type filter + reranker** | **4.04** | **4** | **19** | ✅ |
+| + reranker_top_k=20, context_top_k=8 | ~4.04* | ~4* | ~19* | smoke |
 
 \* estimativa via smoke test, sem full eval de 30 questões.
 
-**Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" (4.36 → 2.90) por viés intra-edital do reranker em Q05, Q26 e Q29. A média global de 4.04 é praticamente idêntica ao Passo 3 (4.09), sendo a principal diferença a redistribuição dos ganhos e perdas entre programas.
+**Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" (4.36 → 2.90) por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável e explorou `reranker_top_k` até 20, sem resolver Q26 e Q29 — o limite do tuning de parâmetros foi atingido. A solução definitiva é fine-tuning do cross-encoder.
