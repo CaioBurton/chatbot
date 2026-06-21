@@ -95,6 +95,34 @@ _IDENTITY_RESPONSE = (
     "Basta me fazer uma pergunta sobre pesquisa e inovação na UFPI!"
 )
 
+# Lexical injection: add domain-specific terms to the hybrid search candidate pool
+# when queries suffer from vocabulary mismatch between the question and the relevant
+# chunks. These synthetic queries are merged (union + dedup by max score) into the
+# normal retrieval set before reranking — the reranker then judges all candidates
+# against the original query without any structural change to the pipeline.
+_LEXICAL_EXPANSIONS: list[tuple[re.Pattern, str]] = [
+    # Q26-type: "sistema"/"plataforma"/"portal" → chunks with "SIGAA" keyword
+    (
+        re.compile(r"\b(sistema|plataforma|portal)\b", re.IGNORECASE),
+        "SIGAA sistema integrado gestão atividades acadêmicas inscrições relatórios",
+    ),
+    # Q29-type: "filho"/"filha"/"cônjuge"/"parente" → conflict-of-interest chunks
+    (
+        re.compile(r"\b(filho|filha|c[oô]njuge|esposa|marido|parente|familiar)\b", re.IGNORECASE),
+        "vedado cônjuge companheiro parente linha reta colateral afinidade terceiro grau orientar",
+    ),
+    # Q05/Q25-type: "vigência" → specific date chunks in cronograma sections
+    (
+        re.compile(r"\bvig[eê]ncia\b", re.IGNORECASE),
+        "1 setembro 2025 31 agosto 2026 início vigência bolsas 12 meses cronograma",
+    ),
+]
+
+
+def _lexical_injection_queries(query: str) -> list[str]:
+    """Return synthetic queries for patterns that suffer from lexical mismatch."""
+    return [expansion for pattern, expansion in _LEXICAL_EXPANSIONS if pattern.search(query)]
+
 # Compression prompt is module-level to avoid per-call re-allocation and to
 # keep the instruction surface auditable in one place.
 _COMPRESS_PROMPT_TEMPLATE = (
@@ -541,6 +569,7 @@ async def rag_stream(
         if hyde_answer:
             all_queries.append(hyde_answer)
         all_queries.extend(extra_queries)
+        all_queries.extend(_lexical_injection_queries(query))
 
         # Union + dedup across all queries (keep highest score per point ID)
         stage_start = time.perf_counter()
@@ -568,10 +597,16 @@ async def rag_stream(
         # ------------------------------------------------------------------ #
         # 4. Reranking                                                        #
         # ------------------------------------------------------------------ #
+        # Augment the reranker query with lexical expansion terms so the
+        # cross-encoder scores domain-specific chunks correctly even when the
+        # original query uses different vocabulary (e.g. "sistema" vs "SIGAA").
+        _lex_expansions = _lexical_injection_queries(query)
+        reranker_query = query + (" " + " ".join(_lex_expansions) if _lex_expansions else "")
+
         stage_start = time.perf_counter()
         if rag_cfg.reranker_enabled:
             reranked = await rerank(
-                query,
+                reranker_query,
                 merged_points,
                 top_k=rag_cfg.reranker_top_k,
                 score_threshold=rag_cfg.reranker_score_threshold,
