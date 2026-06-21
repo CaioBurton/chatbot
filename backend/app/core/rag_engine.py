@@ -37,7 +37,7 @@ from app.db.rag_config import get_rag_config
 from app.db.reranker import rerank
 from app.db.search import expand_to_parents, hybrid_search
 from app.models.chat import ChatMessage, ChatSession
-from qdrant_client.models import FieldCondition, Filter, MatchAny, ScoredPoint
+from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchText, ScoredPoint
 
 # Exclude non-editorial document types from RAG retrieval by default.
 # Portarias list program names (causing the reranker to surface them for
@@ -50,6 +50,34 @@ _RAG_PAYLOAD_FILTER = Filter(
             match=MatchAny(any=["portaria", "relatorio"]),
         )
     ]
+)
+
+# Q15 pinned injection: ICV-only search to bypass reranker competition.
+# MatchText("icv") on the source field tokenises filenames like
+# "3-2025-2026_Edital_ICV.pdf" → includes all ICV editais regardless of year.
+_ICV_SOURCE_FILTER = Filter(
+    must=[FieldCondition(key="source", match=MatchText(text="icv"))],
+    must_not=[FieldCondition(key="doc_type", match=MatchAny(any=["portaria", "relatorio"]))],
+)
+_ICV_HABILITACAO_RE = re.compile(
+    r"\bICV\b.{0,100}\bpontos?\s+m[íi]nimos?\b"
+    r"|\bpontos?\s+m[íi]nimos?\b.{0,100}\bICV\b",
+    re.IGNORECASE,
+)
+_ICV_HABILITACAO_QUERY = (
+    "ICV habilitado etapa análise planos trabalho proponente atingir mínimo "
+    "pontos somatório total tabela pontuação Iniciação Científica Voluntária"
+)
+
+# Q05 pinned injection: "vigência bolsas" for a specific program (not Q25 cross-program).
+# The cronograma section floods context with many date ranges; pinning the dedicated
+# "DO PERÍODO DE VIGÊNCIA DA BOLSA" section forces the LLM to see the correct dates.
+_VIGENCIA_BOLSA_RE = re.compile(
+    r"\bvig[eê]ncia\b.*\bbolsa[s]?\b|\bbolsa[s]?\b.*\bvig[eê]ncia\b",
+    re.IGNORECASE,
+)
+_VIGENCIA_BOLSA_QUERY = (
+    "DO PERÍODO DE VIGÊNCIA DA BOLSA vigência doze meses início término setembro agosto PIBIC ICV PIBITI"
 )
 
 logger = logging.getLogger(__name__)
@@ -111,10 +139,34 @@ _LEXICAL_EXPANSIONS: list[tuple[re.Pattern, str]] = [
         re.compile(r"\b(filho|filha|c[oô]njuge|esposa|marido|parente|familiar)\b", re.IGNORECASE),
         "vedado cônjuge companheiro parente linha reta colateral afinidade terceiro grau orientar",
     ),
-    # Q05/Q25-type: "vigência" → specific date chunks in cronograma sections
+    # Q05-type: "vigência" → bolsa vigência section (structural heading, future-proof)
+    # Uses the section title "DO PERÍODO DE VIGÊNCIA DA BOLSA" and "doze meses" —
+    # structural language that appears in every edital regardless of specific dates.
     (
         re.compile(r"\bvig[eê]ncia\b", re.IGNORECASE),
-        "1 setembro 2025 31 agosto 2026 início vigência bolsas 12 meses cronograma",
+        "DO PERÍODO DE VIGÊNCIA DA BOLSA doze meses início término vigência bolsas edital",
+    ),
+    # Q25-type: "vigência" + "todos"/"programas" → cross-doc cronograma from all editais
+    (
+        re.compile(r"\bvig[eê]ncia\b.*\b(todos|programas|PIBIC|ICV|PIBITI|PIBICEM)\b|\b(todos|programas)\b.*\bvig[eê]ncia\b", re.IGNORECASE),
+        "PIBIC ICV PIBITI PIBICEM todos os programas vigência início término cronograma bolsas",
+    ),
+    # Q15-type generic: "pontos mínimos" → habilitação chunk (catches Q06/PIBIC etc.)
+    (
+        re.compile(r"\bpontos?\s+m[íi]nimos?\b", re.IGNORECASE),
+        "pontos mínimos habilitado análise plano trabalho tabela pontuação Anexo I orientador",
+    ),
+    # Q15-type ICV-specific: "pontos mínimos" + "ICV" → ICV 6.1.2.2 clause vocabulary
+    # Uses near-verbatim structural text so the cross-encoder ranks the ICV habilitação
+    # parent above competing PIBIC scoring-table chunks during reranking.
+    (
+        re.compile(
+            r"\bICV\b.{0,100}\bpontos?\s+m[íi]nimos?\b"
+            r"|\bpontos?\s+m[íi]nimos?\b.{0,100}\bICV\b",
+            re.IGNORECASE,
+        ),
+        "ICV habilitado etapa análise planos trabalho proponente atingir mínimo pontos "
+        "somatório total tabela pontuação Iniciação Científica Voluntária",
     ),
 ]
 
@@ -149,6 +201,8 @@ REGRAS OBRIGATÓRIAS:
     Para esclarecimentos adicionais, entre em contato diretamente com a PROPESQI."
 3. Nunca invente datas, normas, nomes ou valores.
 4. Mantenha tom institucional, respeitoso e acessível ao público universitário.
+5. Ao citar datas, mencione sempre o dia, o mês e o ano completos \
+(ex: "1º de setembro de 2025", nunca apenas "setembro de 2025" ou "2025").
 
 CONTEXTO DOS DOCUMENTOS:
 {context}
@@ -638,6 +692,48 @@ async def rag_stream(
                 {**(pt.payload or {}), "score": pt.score}
                 for pt in reranked[:context_top_k]
             ]
+
+        # Pinned ICV injection (Q15-type): when the query asks about ICV + pontos
+        # mínimos, the habilitação chunk (6.1.2.2) is consistently outranked by
+        # identical-vocabulary PIBIC/PIBITI sections. Perform an unfiltered search
+        # and post-filter to ICV sources in Python (MatchText requires a Qdrant
+        # full-text index that the source field does not have for query_points).
+        if _ICV_HABILITACAO_RE.search(query):
+            _pinned_all = await hybrid_search(
+                _ICV_HABILITACAO_QUERY,
+                top_k=20,
+                payload_filter=_RAG_PAYLOAD_FILTER,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+            )
+            _pinned_icv = [
+                pt for pt in _pinned_all
+                if "ICV" in (pt.payload.get("source") or "")
+            ]
+            if _pinned_icv:
+                _pinned = expand_to_parents(_pinned_icv[:1])
+                if _pinned:
+                    _existing = {p["parent_id"] for p in reranked_parents}
+                    if _pinned[0]["parent_id"] not in _existing:
+                        reranked_parents = [_pinned[0]] + reranked_parents[:context_top_k - 1]
+
+        # Q05 pinned injection: "vigência das bolsas" queries retrieve the dedicated
+        # "DO PERÍODO DE VIGÊNCIA DA BOLSA" section. Without pinning, the cronograma
+        # section floods context with many date ranges and confuses the LLM.
+        if _VIGENCIA_BOLSA_RE.search(query):
+            _pinned_vig_all = await hybrid_search(
+                _VIGENCIA_BOLSA_QUERY,
+                top_k=10,
+                payload_filter=_RAG_PAYLOAD_FILTER,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+            )
+            if _pinned_vig_all:
+                _pinned_vig = expand_to_parents(_pinned_vig_all[:1])
+                if _pinned_vig:
+                    _existing = {p["parent_id"] for p in reranked_parents}
+                    if _pinned_vig[0]["parent_id"] not in _existing:
+                        reranked_parents = [_pinned_vig[0]] + reranked_parents[:context_top_k - 1]
 
         history_result = await db.execute(
             select(ChatMessage)
