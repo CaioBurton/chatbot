@@ -895,9 +895,57 @@ Os três problemas crônicos — Q05 (viés calendário SIGAA), Q26 (mismatch "s
 
 ### Avaliação completa das 30 questões — Passo 8
 
-**Arquivo:** `groundtruth_chatbot_rag_resultados_passo8_full.csv`
+**Arquivo:** `groundtruth_chatbot_rag_resultados_passo8_full.csv`  
+**Data:** 2026-06-21
 
-> **Avaliação em andamento.** Resultados serão registrados aqui após conclusão.
+**Resultado:** ❌ **Net negativo — reranker fine-tunado revertido.**
+
+| Métrica | Passo 5 (baseline) | Passo 8 | Δ |
+|---|---|---|---|
+| Média geral | 4.037/5 (80.7%) | **3.073/5 (61.5%)** | **−0.964** |
+| Ruins (<2.5) | 4 | **11** | +7 |
+| Excelentes (≥4.5) | 19 | **13** | −6 |
+
+**Pontuações por questão:**
+
+| ID | Passo 5 | Passo 7 | Passo 8 | Δ P7→P8 | Tendência |
+|---|---|---|---|---|---|
+| Q01 | 5.0 | 5.0 | 1.5 | −3.5 | ❌ regressão |
+| Q02 | 3.6 | 3.5 | 3.5 | 0.0 | ➡ estável |
+| Q03 | 4.0 | 3.5 | 3.5 | 0.0 | ➡ estável |
+| Q04 | 5.0 | 4.0 | 2.0 | −2.0 | ❌ regressão |
+| Q05 | 0.2 | 0.2 | 2.1 | +1.9 | ✅ melhora (alvo) |
+| Q06 | 5.0 | 4.5 | 0.5 | −4.0 | ❌ regressão grave |
+| Q07 | 5.0 | 5.0 | 0.2 | −4.8 | ❌ regressão grave |
+| Q08 | 4.8 | 4.5 | 5.0 | +0.5 | ✅ melhora |
+| Q09 | 5.0 | 5.0 | 5.0 | 0.0 | ➡ estável |
+| Q10 | 4.8 | 5.0 | 0.0 | −5.0 | ❌ regressão grave |
+| Q11 | 4.0 | 4.5 | 4.3 | −0.2 | ➡ estável |
+| Q12 | 5.0 | 4.4 | 5.0 | +0.6 | ✅ melhora |
+| Q13 | 4.5 | 4.5 | 3.5 | −1.0 | ❌ regressão |
+| Q14 | 3.5 | 3.5 | 3.5 | 0.0 | ➡ estável |
+| Q15 | 5.0 | 0.0 | 0.0 | 0.0 | ➡ estável (falha crônica) |
+| Q16 | 4.8 | 5.0 | 5.0 | 0.0 | ➡ estável |
+| Q17 | 5.0 | 5.0 | 5.0 | 0.0 | ➡ estável |
+| Q18 | 3.5 | 2.8 | 3.0 | +0.2 | ✅ melhora leve |
+| Q19 | 4.3 | 4.5 | 0.5 | −4.0 | ❌ regressão grave |
+| Q20 | 4.8 | 4.0 | 1.3 | −2.7 | ❌ regressão |
+| Q21 | 4.5 | 4.5 | 4.5 | 0.0 | ➡ estável |
+| Q22 | 4.5 | 4.5 | 4.5 | 0.0 | ➡ estável |
+| Q23 | 5.0 | 5.0 | 5.0 | 0.0 | ➡ estável |
+| Q24 | 4.5 | 4.5 | 4.5 | 0.0 | ➡ estável |
+| Q25 | 0.8 | 0.5 | 0.5 | 0.0 | ➡ estável (falha crônica) |
+| Q26 | 0.5 | 1.0 | 4.5 | +3.5 | ✅ melhora (alvo) |
+| Q27 | 4.8 | 4.3 | 4.5 | +0.2 | ➡ estável |
+| Q28 | 5.0 | 5.0 | 5.0 | 0.0 | ➡ estável |
+| Q29 | 0.5 | 1.0 | 4.8 | +3.8 | ✅ melhora (alvo) |
+| Q30 | 4.2 | 4.3 | 0.0 | −4.3 | ❌ regressão grave |
+
+**Análise das regressões:**
+
+O fine-tuning resolveu as 3 questões-alvo (Q05 +1.9, Q26 +3.5, Q29 +3.8), mas introduziu regressões graves em 6 questões que antes pontuavam alto (Q06, Q07, Q10, Q19, Q30 → score ~0; Q01 → 1.5). Hipótese mais provável: o dataset de 209 pares estava desbalanceado — 90% dos exemplos positivos vieram de chunks de cronograma/SIGAA/conflito-de-interesses, ensinando o cross-encoder a desconfiar de chunks de "detalhe factual" (tabelas de pontuação, seções de elegibilidade, aditivos) que são exatamente o que Q06, Q07, Q10, Q19 e Q30 precisam. A accuracy@0.5 inalterada durante o treino (sinal de alerta ignorado) indicava que o modelo estava ajustando logit magnitudes, não aprendendo a separar melhor positivos de negativos — o que resultou em degradação out-of-distribution.
+
+**Decisão:** reranker revertido para `BAAI/bge-reranker-v2-m3` (modelo base). Q26 e Q29 voltam ao estado P5 (scores ~0.5). As 4 falhas crônicas (Q05, Q25, Q26, Q29) permanecem sem solução.
 
 ---
 
@@ -905,15 +953,19 @@ Os três problemas crônicos — Q05 (viés calendário SIGAA), Q26 (mismatch "s
 
 ### Alta prioridade
 
-1. ~~**Fine-tuning do reranker**~~ — **concluído no Passo 8** (Q05 +1.9, Q26 +3.5, Q29 +4.0).
+1. **Q26/Q29 — injeção lexical seletiva no retrieval**  
+   Em vez de fine-tuning global do reranker (que quebra outras questões), aplicar boost lexical apenas para queries com tokens "sistema", "plataforma" ou "vedado/cônjuge/parente": antes de enviar para o reranker, forçar a inclusão dos top-3 chunks BM42 (que já fazem matching lexical exato em "SIGAA" e "cônjuge"). O reranker fica responsável apenas por ordenar, não por descobrir chunks com mismatch lexical.
 
-2. **Q05 — compressão contextual seletiva** (se persistir após Passo 8 full eval)  
-   Q05 ainda pontua 2.1/5 mesmo com fine-tuning. A dificuldade é "vigência das bolsas" vs "vigência do edital" — dois chunks com datas diferentes que competem no contexto. Compressão contextual seletiva (reabilitada somente para queries de data/vigência) pode eliminar o chunk errado antes de passar ao LLM.
+2. **Q05/Q25 — filtro de doc_type para chunks de cronograma**  
+   Q05 ("vigência") e Q25 ("data de início de vigência de todos os programas") erram porque chunks de "Seção Geral" ou "Resolução CEPEX" sobrepõem os chunks de cronograma. Filtrar `doc_type=cronograma` OU usar um pré-filtro de metadados `section_title contains "vigência" OR "cronograma"` antes do reranker.
 
 ### Média prioridade
 
-3. **Aditivos como documentos relacionados**  
-   Q30 subiu de 3.0 para 4.2 com o Passo 5. Avaliar se associar aditivos ao edital de origem (por metadado `edital_ref`) melhora a recuperação conjunta edital + aditivo.
+3. **Fine-tuning com dataset balanceado (Passo 8 revisitado)**  
+   Se tentar fine-tuning novamente, construir dataset com pelo menos 3 pares positivos/negativos para *cada* questão do ground truth (90 questões × 3 = 270+ pares balanceados), não apenas para as 3 questões-alvo. Monitorar accuracy por categoria durante o treino.
+
+4. **Aditivos como documentos relacionados**  
+   Q30 (Aditivo nº 1) e Q14 (Aditivo nº 2 — datas ICV) dependem de aditivos. Associar aditivos ao edital de origem via metadado `edital_ref` pode melhorar a recuperação conjunta.
 
 ---
 
@@ -930,8 +982,8 @@ Os três problemas crônicos — Q05 (viés calendário SIGAA), Q26 (mismatch "s
 | **+ doc_type filter + reranker** | **4.04** | **4** | **19** | ✅ |
 | + reranker_top_k=20, context_top_k=8 | ~4.04* | ~4* | ~19* | smoke |
 | + HyDE com contexto de domínio (SIGAA) | 3.77 | 5 | 16 | ✅ (revertido — net negativo) |
-| **+ reranker fine-tunado (domínio PROPESQI)** | **pendente** | **pendente** | **pendente** | 🔄 em andamento |
+| + reranker fine-tunado (domínio PROPESQI) | 3.07 | 11 | 13 | ✅ (revertido — net negativo) |
 
 \* estimativa via smoke test, sem full eval de 30 questões.
 
-**Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" (4.36 → 2.90) por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável e explorou `reranker_top_k` até 20, sem resolver Q26 e Q29. O Passo 7 (HyDE enriquecido) foi net negativo (-0.27). O Passo 8 (fine-tuning do cross-encoder) eliminou o viés lexical nas 3 questões-alvo: Q05 +1.9, Q26 +3.5, Q29 +4.0 no smoke test.
+**Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" (4.36 → 2.90) por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável e explorou `reranker_top_k` até 20, sem resolver Q26 e Q29. O Passo 7 (HyDE enriquecido) foi net negativo (−0.27). O Passo 8 (fine-tuning do cross-encoder) eliminou o viés lexical nas 3 questões-alvo no smoke test (+9.4 pts combinados), mas o full eval revelou regressões graves em 6 questões (+4 ruins extras vs P5), resultando em média −0.96 vs P5. Hipótese: dataset desbalanceado (dominado por padrões SIGAA/conflito) treinou o modelo a rejeitar chunks de detalhe factual. Revertido. **Melhor configuração até agora: Passo 5 (4.04/5, 80.7%).**
