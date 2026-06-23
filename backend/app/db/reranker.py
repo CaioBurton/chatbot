@@ -52,9 +52,11 @@ def _get_encoder():
                 # Import deferred so the module is importable before the
                 # sentence-transformers package downloads model weights.
                 from sentence_transformers import CrossEncoder  # type: ignore[import]
+                import torch
 
+                device = "cuda" if torch.cuda.is_available() else "cpu"
                 settings = get_settings()
-                _encoder = CrossEncoder(settings.RERANKER_MODEL)
+                _encoder = CrossEncoder(settings.RERANKER_MODEL, device=device)
     return _encoder
 
 

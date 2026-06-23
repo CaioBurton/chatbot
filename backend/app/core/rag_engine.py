@@ -628,10 +628,9 @@ async def rag_stream(
         # Union + dedup across all queries (keep highest score per point ID)
         stage_start = time.perf_counter()
         merged_by_id: dict[str, ScoredPoint] = {}
-        for q in all_queries:
-            if not q:
-                continue
-            pts = await hybrid_search(
+        _valid_queries = [q for q in all_queries if q]
+        _search_tasks = [
+            hybrid_search(
                 q,
                 top_k=rag_cfg.search_top_k,
                 score_threshold=rag_cfg.search_score_threshold,
@@ -639,6 +638,12 @@ async def rag_stream(
                 embedding_provider=embedding_provider,
                 embedding_model=embedding_model,
             )
+            for q in _valid_queries
+        ]
+        _search_results = await asyncio.gather(*_search_tasks, return_exceptions=True)
+        for pts in _search_results:
+            if isinstance(pts, Exception):
+                continue
             for pt in pts:
                 pid = str(pt.id)
                 existing = merged_by_id.get(pid)
