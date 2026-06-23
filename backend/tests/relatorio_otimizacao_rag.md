@@ -1055,7 +1055,26 @@ Ambas usam post-filtering Python (não filtro Qdrant — `MatchText` requer índ
 | Q15 | 0.0 | **4.5** | **+4.5** |
 | Q25 | 1.0 | **3.4** | **+2.4** |
 
-**Full eval em andamento** (arquivo: `groundtruth_chatbot_rag_resultados_passo10_full.csv`)
+**Full eval concluído** — arquivo: `groundtruth_chatbot_rag_resultados_passo10_full.csv`
+
+| Métrica | Passo 9 | **Passo 10** | Δ |
+|---|---|---|---|
+| Média geral | 4.073/5 (81.5%) | **4.503/5 (90.1%)** | **+0.43** |
+| Excelentes (≥4.5) | 19/30 | **22/30** | +3 |
+| Ruins (<2.5) | 3/30 | **0/30** | −3 |
+| Q05 | 0.2 | **5.0** | **+4.8** |
+| Q15 | 0.0 | **4.5** | **+4.5** |
+| Q25 | 1.0 | **3.4** | **+2.4** |
+
+**Por programa (Passo 10):**
+
+| Programa | Questões | Média |
+|---|---|---|
+| PIBIC/PIBIC-Af | Q01–Q10 | **4.61/5** |
+| ICV | Q11–Q15 | **4.40/5** |
+| PIBITI | Q16–Q19 | **4.35/5** |
+| PIBIC-EM | Q20–Q23 | **4.58/5** |
+| Geral (transversal) | Q24–Q30 | **4.47/5** |
 
 ---
 
@@ -1088,8 +1107,6 @@ Ambas usam post-filtering Python (não filtro Qdrant — `MatchText` requer índ
 | + HyDE com contexto de domínio (SIGAA) | 3.77 | 5 | 16 | ✅ (revertido — net negativo) |
 | + reranker fine-tunado (domínio PROPESQI) | 3.07 | 11 | 13 | ✅ (revertido — net negativo) |
 | **+ injeção lexical seletiva (Q26/Q29/Q05)** | **4.07** | **3** | **19** | ✅ |
-| **+ injeção pinned ICV (Q15) + vigência bolsas (Q05)** | **TBD** | **~4.5*** | **TBD** | 🔄 em andamento |
+| **+ injeção pinned ICV (Q15) + vigência bolsas (Q05)** | **4.503/5 (90.1%)** | **0** | **22** | ✅ |
 
-\* estimativa baseada no smoke test Q05/Q15/Q25. Full eval completo em andamento.
-
-**Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável sem resolver Q26/Q29. O Passo 7 (HyDE enriquecido) foi net negativo (−0.27). O Passo 8 (fine-tuning do cross-encoder) eliminou o viés lexical nos 3 alvos no smoke test mas foi net negativo no full eval (−0.96 vs P5) por dataset desbalanceado. O Passo 9 (injeção lexical seletiva em retrieval + reranker query) resolveu Q26 (+4.0) e Q29 (+4.3) sem regressões globais, estabelecendo novo recorde: **4.073/5 (81.5%)**. O Passo 10 (injeção pinned ICV + vigência bolsas) resolve Q15 (0.0→4.5) e Q05 (0.2→5.0) via contexto forçado, aguardando confirmação no full eval.
+**Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável sem resolver Q26/Q29. O Passo 7 (HyDE enriquecido) foi net negativo (−0.27). O Passo 8 (fine-tuning do cross-encoder) eliminou o viés lexical nos 3 alvos no smoke test mas foi net negativo no full eval (−0.96 vs P5) por dataset desbalanceado. O Passo 9 (injeção lexical seletiva em retrieval + reranker query) resolveu Q26 (+4.0) e Q29 (+4.3) sem regressões globais, estabelecendo novo recorde: **4.073/5 (81.5%)**. O Passo 10 (injeção pinned ICV + vigência bolsas) resolve Q15 (0.0→4.5) e Q05 (0.2→5.0) via contexto forçado, estabelecendo **novo recorde absoluto: 4.503/5 (90.1%)**. Todos os programas acima de 4.35/5; zero respostas ruins.
