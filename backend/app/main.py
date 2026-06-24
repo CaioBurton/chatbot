@@ -16,12 +16,42 @@ from app.db.qdrant import ensure_collection
 settings = get_settings()
 
 
+async def _warmup() -> None:
+    """Pre-load all inference models at startup so the first user request is fast."""
+    import asyncio
+    from app.core.embeddings import generate_dense_embeddings
+    from app.db.reranker import rerank
+    from app.ingestion.sparse import get_sparse_encoder
+    from qdrant_client.models import ScoredPoint
+
+    # bge-m3 (Ollama dense embeddings) + BM42 (fastembed sparse) run in parallel
+    async def _warm_bge():
+        try:
+            await generate_dense_embeddings(["warmup"], provider="local", model="bge-m3", settings=settings)
+        except Exception:
+            pass
+
+    async def _warm_bm42():
+        try:
+            await get_sparse_encoder()
+        except Exception:
+            pass
+
+    await asyncio.gather(_warm_bge(), _warm_bm42())
+
+    # CrossEncoder reranker (PyTorch on GPU) — after embeddings are ready
+    try:
+        dummy = ScoredPoint(id="00000000-0000-0000-0000-000000000000", version=0, score=0.0, payload={"parent_text": "warmup"})
+        await rerank("warmup", [dummy], top_k=1, score_threshold=0.0)
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Startup: ensure the Qdrant collection exists before accepting requests
     await ensure_collection()
+    await _warmup()
     yield
-    # Shutdown: nothing to clean up
 
 
 app = FastAPI(
