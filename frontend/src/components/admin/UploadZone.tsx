@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type DragEvent, type ChangeEvent } from 'react'
 import { FileText, CheckCircle2, XCircle, Loader2, UploadCloud } from 'lucide-react'
 import { API_BASE } from '../../lib/api'
+import { generateUUID } from '../../lib/uuid'
 import { useIndexingProgress } from '../../hooks/useIndexingProgress'
 import UploadMetadataModal from './UploadMetadataModal'
 
@@ -145,11 +146,7 @@ export default function UploadZone({ onUploaded }: Props) {
   const dragCounter = useRef(0)
 
   const uploadFile = (file: File, displayName: string, sourceUrl: string, docType: string) => {
-    // Use crypto.randomUUID when available, fall back to timestamp+random.
-    const id =
-      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random()}`
+    const id = generateUUID()
     const entry: FileEntry = { id, name: file.name, progress: 0, status: 'uploading' }
     setFiles(prev => [...prev, entry])
 

@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from 'react'
 import { getSessionHistory, SourceCitation, API_BASE } from '../lib/api'
+import { generateUUID } from '../lib/uuid'
 
 function splitIntoTypingChunks(text: string): string[] {
   if (text.length <= 4) return [text]
@@ -157,13 +158,13 @@ export function useChat() {
       invalidateHistoryRequests()
 
       const userMsg: DisplayMessage = {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         role: 'user',
         content: text,
         sources: null,
         created_at: new Date().toISOString(),
       }
-      let assistantId: string = crypto.randomUUID()
+      let assistantId: string = generateUUID()
       const assistantPlaceholder: DisplayMessage = {
         id: assistantId,
         role: 'assistant',
