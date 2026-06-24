@@ -35,10 +35,7 @@ npm run build    # production build (tsc + vite build → dist/)
 
 ### Docker (full stack)
 ```bash
-# With GPU support (NVIDIA)
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-
-# CPU-only
+# GPU habilitado por padrão (backend + ollama)
 docker compose up -d
 ```
 

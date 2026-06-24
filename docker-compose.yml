@@ -1,6 +1,6 @@
 # PROPESQI RAG Chatbot — Docker Compose (GPU mode — NVIDIA RTX 5060 Ti 16 GB)
-# Prerequisites: nvidia-container-toolkit installed and Docker daemon configured
-#   with "default-runtime": "nvidia" (or the deploy block below handles it).
+# Prerequisites: nvidia-container-toolkit installed and Docker daemon configured.
+# GPU is enabled by default for backend and ollama via deploy.resources.reservations.
 # Usage: docker compose up -d
 
 services:
@@ -127,6 +127,13 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: propesqi_backend
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     environment:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
       QDRANT_URL: ${QDRANT_URL}
