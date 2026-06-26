@@ -54,6 +54,7 @@ async def process_document(
     file_path: str,
     original_name: str,
     doc_type: str = "edital",
+    edital_ref: str | None = None,
 ) -> None:
     """
     Background ingestion pipeline for a single PDF document.
@@ -122,6 +123,7 @@ async def process_document(
                 parent_tokens=rag_cfg.parent_chunk_tokens,
                 child_tokens=rag_cfg.child_chunk_tokens,
                 doc_type=doc_type,
+                edital_ref=edital_ref,
             )
 
             if not chunks:

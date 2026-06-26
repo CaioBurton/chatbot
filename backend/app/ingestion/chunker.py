@@ -40,6 +40,7 @@ def _sync_chunk(
     parent_tokens: int = 512,
     child_tokens: int = 128,
     doc_type: str = "edital",
+    edital_ref: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build hierarchical parent→child chunks from extracted page text.
@@ -85,6 +86,7 @@ def _sync_chunk(
                             "hash": chunk_hash,
                             "parent_text": parent_text,
                             "doc_type": doc_type,
+                            "edital_ref": edital_ref,
                         },
                     }
                 )
@@ -101,6 +103,7 @@ async def chunk_pages(
     parent_tokens: int = 512,
     child_tokens: int = 128,
     doc_type: str = "edital",
+    edital_ref: str | None = None,
 ) -> list[dict[str, Any]]:
     """Async wrapper: runs the CPU-bound chunking in the default thread executor."""
     created_at = datetime.now(timezone.utc).isoformat()
@@ -116,4 +119,5 @@ async def chunk_pages(
         parent_tokens,
         child_tokens,
         doc_type,
+        edital_ref,
     )

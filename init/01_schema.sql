@@ -55,6 +55,9 @@ UPDATE documents SET display_name = original_name WHERE display_name IS NULL;
 -- Migration: add doc_type to existing deployments (idempotent)
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_type TEXT NOT NULL DEFAULT 'edital';
 
+-- Migration: add edital_ref to existing deployments (idempotent)
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS edital_ref TEXT;
+
 -- =============================================================================
 -- chunks
 -- Mirrors the Qdrant point metadata so SQL queries can join doc ↔ chunk.

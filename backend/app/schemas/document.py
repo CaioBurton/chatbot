@@ -14,6 +14,7 @@ class DocumentUploadResponse(BaseModel):
     display_name: str
     source_url: str | None
     doc_type: str
+    edital_ref: str | None = None
 
 
 class DocumentListItem(BaseModel):
@@ -24,6 +25,7 @@ class DocumentListItem(BaseModel):
     display_name: str
     source_url: str | None
     doc_type: str
+    edital_ref: str | None = None
     status: str
     file_type: str
     total_chunks: int | None
@@ -38,6 +40,7 @@ class DocumentDetail(BaseModel):
     display_name: str
     source_url: str | None
     doc_type: str
+    edital_ref: str | None = None
     status: str
     file_type: str
     ocr_applied: bool

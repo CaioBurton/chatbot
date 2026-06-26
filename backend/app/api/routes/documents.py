@@ -60,6 +60,7 @@ async def upload_document(
     display_name: str | None = Form(None),
     source_url: str | None = Form(None),
     doc_type: str = Form("edital"),
+    edital_ref: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     _user=Depends(require_admin),
 ) -> DocumentUploadResponse:
@@ -126,12 +127,15 @@ async def upload_document(
     resolved_display_name = (display_name or "").strip() or (file.filename or sanitised_name)
     resolved_source_url = (source_url or "").strip() or None
 
+    resolved_edital_ref = (edital_ref or "").strip() or None
+
     doc = Document(
         filename=storage_filename,
         original_name=file.filename or sanitised_name,
         display_name=resolved_display_name,
         source_url=resolved_source_url,
         doc_type=doc_type,
+        edital_ref=resolved_edital_ref,
         file_hash=file_hash,
         file_type="pdf_native",
         ocr_applied=False,
@@ -154,6 +158,7 @@ async def upload_document(
         str(file_path),
         file.filename or sanitised_name,
         doc.doc_type,
+        doc.edital_ref,
     )
 
     return DocumentUploadResponse(
@@ -163,6 +168,7 @@ async def upload_document(
         display_name=doc.display_name,
         source_url=doc.source_url,
         doc_type=doc.doc_type,
+        edital_ref=doc.edital_ref,
     )
 
 
@@ -487,6 +493,7 @@ async def reindex_document(
         str(file_path),
         doc.original_name,
         doc.doc_type,
+        doc.edital_ref,
     )
 
     return DocumentUploadResponse(
@@ -496,6 +503,7 @@ async def reindex_document(
         display_name=doc.display_name,
         source_url=doc.source_url,
         doc_type=doc.doc_type,
+        edital_ref=doc.edital_ref,
     )
 
 
