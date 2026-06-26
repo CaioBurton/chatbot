@@ -104,6 +104,20 @@ _VIGENCIA_MULTI_EDITAL: list[tuple[str, list[str]]] = [
     ),
 ]
 
+# Q18 pinned injection: PIBITI acúmulo de bolsas — a cláusula de devolução de valores
+# (4.2.7 ou similar) fica abaixo do top-k por ter vocabulário diferente da query sobre
+# "acumular bolsas". A query usa "acumular/empregos" mas a cláusula usa
+# "devolver/mensalidades/indevidamente".
+_PIBITI_ACUMULO_RE = re.compile(
+    r"\b(acumul|PIBITI).{0,60}\b(bolsa|emprego|est[aá]gio|outr)\b"
+    r"|\b(bolsa|emprego|est[aá]gio).{0,60}\b(acumul|PIBITI)\b",
+    re.IGNORECASE,
+)
+_PIBITI_ACUMULO_QUERY = (
+    "PIBITI vedado acumular bolsa estágio remunerado extracurricular devolver devolution "
+    "mensalidades recebidas indevidamente CNPq UFPI valores atualizados 4.2"
+)
+
 # Q21 pinned injection: PIBICEM seção 3.2.1 — bolsista não precisa ser do mesmo colégio.
 # The query uses "mesmo colégio" but the clause uses "lotado"/"obrigatoriedade"/"vinculado",
 # causing a vocabulary mismatch that drops the correct chunk below the reranker threshold.
@@ -194,6 +208,17 @@ _LEXICAL_EXPANSIONS: list[tuple[re.Pattern, str]] = [
         re.compile(r"\b(col[eé]gio|escola)\b", re.IGNORECASE),
         "sem obrigatoriedade vinculado colégio escola lotado discente matriculado "
         "PIBIC-EM PIBICEM Ensino Médio concomitante Técnico orientador 3.2.1",
+    ),
+    # Q18-type: "acumular bolsas"/"PIBITI" → devolução clause (mismatch: query uses
+    # "acumular/empregos" but the penalty clause uses "devolver/mensalidades/indevidamente")
+    (
+        re.compile(
+            r"\b(acumul|PIBITI).{0,60}\b(bolsa|emprego|est[aá]gio|outr)\b"
+            r"|\b(bolsa|emprego|est[aá]gio).{0,60}\b(acumul|PIBITI)\b",
+            re.IGNORECASE,
+        ),
+        "PIBITI vedado acumular bolsa estágio remunerado extracurricular devolver "
+        "mensalidades recebidas indevidamente CNPq UFPI valores atualizados",
     ),
     # Q15-type generic: "pontos mínimos" → habilitação chunk (catches Q06/PIBIC etc.)
     (

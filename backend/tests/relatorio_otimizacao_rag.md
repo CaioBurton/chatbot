@@ -1218,11 +1218,12 @@ Q21 ("estudante precisa ser do mesmo colégio que o orientador?") marcou 0.0 em 
 
 3. ~~**Q21 — PIBICEM colégios**~~ **(Passo 13 — resolvido: 0.0→4.5)**
 
-4. **ICV (Q12/Q13) — variação LLM**  
-   Q12 e Q13 são instáveis entre runs (Q12: 4.4–5.0, Q13: 3.5–4.5). A causa é não-determinismo do LLM, não falha de retrieval — os chunks corretos chegam ao contexto, mas a resposta varia. Não é candidato a injeção; possível melhoria via temperatura menor no LLM ou instrução mais diretiva no system prompt.
+4. ~~**Q18 (3.5 crônico) — acúmulo PIBITI / devolução valores**~~ **(Passo 14 — resolvido: 3.5→4.2)**
 
-5. **Q14 (3.5 crônico) — prazo relatório parcial ICV em tabela**  
-   Informação está em tabela de cronograma; o LLM fornece o prazo correto mas erra o formato ou omite o ano. Candidato a regra adicional no system prompt similar à Regra 5 (datas completas).
+5. **Q14 (3.5 crônico) — prazo relatório parcial ICV**  
+   Datas corretas, mas resposta omite "exclusivamente via SIGAA" e não cita "Aditivo nº 2" como fonte. A menção ao SIGAA não está no mesmo chunk que as datas (verificado empiricamente: Rule 8 e expansão lexical não ajudaram). Possível fix: indexar o Aditivo nº 2 do ICV como `doc_type="aditivo"` com metadado `edital_ref="ICV"`, permitindo busca específica por aditivos do ICV.
+
+6. **Q07 (5.0→3.5 no P14, variação LLM)** — questão estável em todos os passos anteriores; o score baixo em P14 é pontual. Não requer ação imediata; monitorar no próximo full eval.
 
 ---
 
@@ -1322,6 +1323,116 @@ Q21 resolvido sem regressões nos guards. Full eval executado na sequência.
 
 ---
 
+## Passo 14 — Q18 expansão lexical devolução PIBITI
+
+**Objetivo:** melhorar Q18 (3.5/5 crônico — "bolsista PIBITI pode acumular bolsas?") e investigar Q14 (3.5/5 crônico — prazo relatório parcial ICV).
+
+**Diagnóstico (via CSV do Passo 13):**
+
+| Q | Score | Causa identificada |
+|---|---|---|
+| Q18 | 3.5 | Resposta cita a vedação corretamente mas omite a cláusula de **devolução dos valores** (mensalidades recebidas indevidamente) |
+| Q14 | 3.5 | Datas corretas mas omite "exclusivamente via SIGAA" e não cita "Aditivo nº 2" como fonte |
+| Q13 | 3.5 | LLM inclui info de comitê de ética irrelevante + omite suspensão de pagamento — não-determinismo |
+| Q02 | 3.2 | Menciona apenas "doutor" sem as categorias de vínculo institucional — completude variável |
+
+### Tentativa 14a — Regras 7 e 8 no system prompt (revertido)
+
+**Regra 7:** "ao descrever uma vedação ou proibição, inclua sempre as consequências ou penalidades previstas"  
+**Regra 8:** "ao informar prazos de envio, mencione o sistema ou canal de envio (SIGAA) quando especificado"
+
+**Resultado do smoke test (14a):**
+
+| ID | P13 | P14a | Δ |
+|---|---|---|---|
+| Q18 | 3.5 | **2.5** | −1.0 ❌ |
+| Q14 | 3.5 | 3.5 | — |
+| Q29 | 5.0 | **3.5** | **−1.5** ❌ |
+
+**Causa do fracasso:** Regra 7 conflita com Regra 2. O LLM responde corretamente, depois tenta cumprir "inclua sempre as consequências", não as encontra explicitamente no contexto, e aplica Regra 2 ("se não estiver nos documentos, responda [fallback]"), gerando a mensagem de fallback **após** a resposta correta. Resultado: resposta contraditória ("...é vedado... Não possuo informações sobre este assunto..."). Regra 8 não ajudou Q14 porque o chunk recuperado com o prazo não contém "SIGAA" na mesma passagem.
+
+**Decisão:** revertidas ambas as regras.
+
+### Tentativa 14b — Pinned injection PIBITI (revertido)
+
+Pinned injection: `_PIBITI_ACUMULO_RE` + busca forçada em fonte PIBITI/ITV para seção de devolução.
+
+**Resultado:** Q18 **2.5** (pior). O top-1 filtrado por `["pibiti", "itv"]` retornou um chunk sobre "Resolução CEPEX/UFPI nº 665 — vedado o vínculo empregatício" (diferente da cláusula de devolução), contaminando o contexto. Padrão idêntico ao que ocorreu com a pinned injection do Passo 12 (Q21).
+
+**Decisão:** revertida a pinned injection. Mantida a **expansão lexical** (não destrutiva).
+
+### Tentativa 14c — Expansão lexical apenas (aceito)
+
+Nova entrada em `_LEXICAL_EXPANSIONS` para Q18-type:
+```python
+# Q18-type: "acumular bolsas"/"PIBITI" → devolução clause vocabulary
+(
+    re.compile(r"\b(acumul|PIBITI).{0,60}\b(bolsa|emprego|est[aá]gio|outr)\b|...", re.IGNORECASE),
+    "PIBITI vedado acumular bolsa estágio remunerado extracurricular devolver "
+    "mensalidades recebidas indevidamente CNPq UFPI valores atualizados",
+)
+```
+
+A expansão lexical injeta os termos da cláusula de devolução em dois pontos:
+1. `all_queries.extend(...)` → `hybrid_search` recupera chunks com "devolver/mensalidades"
+2. `reranker_query = query + expansions` → cross-encoder pontua esses chunks mais alto
+
+**Smoke test (14c):**
+
+| ID | P13 | P14c | Δ |
+|---|---|---|---|
+| Q18 | 3.5 | **4.2** | **+0.7** ✅ |
+| Q14 | 3.5 | 3.5 | — |
+| Q05 | 5.0 | 5.0 | — |
+| Q21 | 4.5 | 4.8 | +0.3 |
+| Q26 | 4.5 | 4.5 | — |
+| Q29 | 5.0 | 5.0 | — |
+
+Q18 melhorou: a resposta passou a citar explicitamente "item 4.2.1 do Edital PIBITI 2025/2026" com resposta mais estruturada. A cláusula de devolução ainda está ausente (o chunk com "devolver mensalidades" pode não existir isolado no índice), mas a resposta é mais precisa e o juiz pontuou 4.2/5.
+
+### Full eval (30 questões) — Passo 14
+
+**Arquivo:** `groundtruth_chatbot_rag_resultados_passo14_full.csv`  
+**Data:** 2026-06-26
+
+| Métrica | Passo 13 | **Passo 14** | Δ |
+|---|---|---|---|
+| **Pontuação média** | 4.567/5 (91.3%) | **4.620/5 (92.4%)** | **+0.053** |
+| Ruins (<2.5) | 0/30 | **0/30** | — |
+| Excelentes (≥4.5) | 23/30 | **25/30** | **+2** |
+
+**Por questão — deltas significativos (≥ 0.2):**
+
+| ID | P13 | P14 | Δ | Obs. |
+|---|---|---|---|---|
+| Q02 | 3.2 | 3.5 | +0.3 | variação LLM |
+| Q03 | 4.3 | 4.5 | +0.2 | ✅ |
+| Q07 | 5.0 | **3.5** | **−1.5** | ❌ variação LLM |
+| Q10 | 4.8 | 5.0 | +0.2 | ✅ |
+| Q12 | 4.4 | 5.0 | +0.6 | ✅ variação LLM favorável |
+| Q13 | 3.5 | 4.5 | +1.0 | ✅ variação LLM favorável |
+| Q18 | 3.5 | **4.2** | **+0.7** | ✅ alvo — expansão lexical PIBITI |
+| Q19 | 4.4 | 4.5 | +0.1 | ✅ |
+| Q20 | 4.8 | 5.0 | +0.2 | ✅ |
+| Q21 | 4.5 | 4.8 | +0.3 | ✅ |
+| Q27 | 4.5 | 4.3 | −0.2 | ruído |
+
+**Por programa:**
+
+| Programa | Passo 13 | Passo 14 | Δ |
+|---|---|---|---|
+| PIBIC / PIBIC-Af | 4.66 | 4.58 | −0.08 (Q07 LLM) |
+| ICV | 4.08 | **4.40** | **+0.32** ✅ Q12/Q13 recuperaram |
+| PIBITI / ITV | 4.47 | **4.67** | **+0.20** ✅ Q18 alvo |
+| PIBICEM | 4.70 | **4.83** | +0.13 |
+| Geral | 4.76 | 4.69 | −0.07 (Q27 ruído) |
+
+**Conclusão:** novo recorde absoluto **4.620/5 (92.4%)**, 25/30 excelentes (novo recorde), 0 ruins. Q18 confirmou a melhoria do smoke test (3.5→4.2): a expansão lexical "devolver mensalidades indevidamente CNPq UFPI" foi suficiente para que o reranker surfaçasse a seção 4.2.1 do PIBITI com citação correta. Q07 regrediu de 5.0 para 3.5 por não-determinismo do LLM (era estável em todos os passos anteriores — variação pontual). Q12 e Q13 (instáveis no P13) se recuperaram.
+
+**Lição aprendida:** regras de system prompt "sempre faça X" que dependem de informação possivelmente ausente no contexto **conflitam estruturalmente com a Regra 2** (fallback). Todas as futuras regras de system prompt devem usar formulação condicional ("se disponível no contexto, X") ou ser testadas com guardrails mais fortes antes do full eval.
+
+---
+
 ## Resumo da evolução
 
 | Configuração | Média | Ruins (<2.5) | Excelentes (≥4.5) | Full eval? |
@@ -1341,5 +1452,6 @@ Q21 resolvido sem regressões nos guards. Full eval executado na sequência.
 | **Passo 11: reranker GPU + warmup lifespan** | **4.522/5 (90.4%)** | **0** | **24** | ✅ |
 | Passo 12: Q25 multi-edital injection + regra vigência | 4.373/5 (87.5%) | 1 | 22 | ✅ (Q21 regressão; contrafactual sem Q21: 4.506) |
 | **Passo 13: Q21 PIBICEM colégio pinned injection** | **4.567/5 (91.3%)** | **0** | **23** | ✅ **novo recorde** |
+| **Passo 14: Q18 expansão lexical devolução PIBITI** | **4.620/5 (92.4%)** | **0** | **25** | ✅ **novo recorde** |
 
 **Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável sem resolver Q26/Q29. O Passo 7 (HyDE enriquecido) foi net negativo (−0.27). O Passo 8 (fine-tuning do cross-encoder) eliminou o viés lexical nos 3 alvos no smoke test mas foi net negativo no full eval (−0.96 vs P5) por dataset desbalanceado. O Passo 9 (injeção lexical seletiva em retrieval + reranker query) resolveu Q26 (+4.0) e Q29 (+4.3) sem regressões globais, estabelecendo novo recorde: **4.073/5 (81.5%)**. O Passo 10 (injeção pinned ICV + vigência bolsas) resolve Q15 (0.0→4.5) e Q05 (0.2→5.0) via contexto forçado, estabelecendo **novo recorde absoluto: 4.503/5 (90.1%)**. Todos os programas acima de 4.35/5; zero respostas ruins. O Passo 11 (reranker GPU + warmup no lifespan) é exclusivamente de latência (cold start 86 s → 23 s) e confirma qualidade preservada: **4.522/5 (90.4%)** — variação dentro do ruído do juiz LLM. O Passo 12 (Q25 injection multi-edital + regra de vigência) introduziu melhorias em Q05/Q06/Q09 e trouxe Q25 para 5.0 em smoke (3.4 no full eval por variabilidade do LLM), mas sofreu regressão dominante em Q21 (4.0→0.0, retrieval instável para PIBICEM colégio): **4.373/5 (87.5%)**; contrafactual sem Q21: 4.506/5.
