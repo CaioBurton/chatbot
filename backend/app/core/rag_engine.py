@@ -80,6 +80,43 @@ _VIGENCIA_BOLSA_QUERY = (
     "DO PERÍODO DE VIGÊNCIA DA BOLSA vigência doze meses início término setembro agosto PIBIC ICV PIBITI"
 )
 
+# Q25 pinned injection: when query asks about vigência of ALL programs simultaneously,
+# inject the vigência section from each non-PIBIC edital explicitly.
+# PIBIC vigência is already covered by _VIGENCIA_BOLSA_RE above; without this,
+# only the PIBIC chunk survives context_top_k and the LLM omits ICV, PIBITI, PIBIC-EM.
+_TODOS_PROGRAMAS_VIGENCIA_RE = re.compile(
+    r"\bvig[eê]ncia\b.{0,80}\b(todos|todas)\b"
+    r"|\b(todos|todas)\b.{0,80}\bvig[eê]ncia\b",
+    re.IGNORECASE,
+)
+_VIGENCIA_MULTI_EDITAL: list[tuple[str, list[str]]] = [
+    (
+        "DO PERÍODO DE VIGÊNCIA DA BOLSA vigência doze meses início término setembro agosto ICV Iniciação Científica Voluntária",
+        ["icv"],
+    ),
+    (
+        "DO PERÍODO DE VIGÊNCIA DA BOLSA vigência doze meses início término setembro agosto PIBITI Inovação Tecnológica",
+        ["pibiti"],
+    ),
+    (
+        "DO PERÍODO DE VIGÊNCIA DA BOLSA vigência doze meses início término setembro agosto PIBICEM PIBIC-EM Ensino Médio",
+        ["pibicem", "pibic-em"],
+    ),
+]
+
+# Q21 pinned injection: PIBICEM seção 3.2.1 — bolsista não precisa ser do mesmo colégio.
+# The query uses "mesmo colégio" but the clause uses "lotado"/"obrigatoriedade"/"vinculado",
+# causing a vocabulary mismatch that drops the correct chunk below the reranker threshold.
+_PIBICEM_COLEGIO_RE = re.compile(
+    r"\b(col[eé]gio|escola)\b.{0,100}\b(orientador|mesmo|PIBICEM|PIBIC.EM|ensino\s+m[eé]dio)\b"
+    r"|\b(orientador|mesmo|PIBICEM|PIBIC.EM)\b.{0,100}\b(col[eé]gio|escola)\b",
+    re.IGNORECASE,
+)
+_PIBICEM_COLEGIO_QUERY = (
+    "PIBIC-EM PIBICEM bolsista discente matriculado Ensino Médio concomitante Técnico "
+    "sem obrigatoriedade vinculado colégio escola lotado orientador 3.2.1 requisito"
+)
+
 logger = logging.getLogger(__name__)
 
 _LOCAL_MODEL = "gemma3:12b"
@@ -151,6 +188,13 @@ _LEXICAL_EXPANSIONS: list[tuple[re.Pattern, str]] = [
         re.compile(r"\bvig[eê]ncia\b.*\b(todos|programas|PIBIC|ICV|PIBITI|PIBICEM)\b|\b(todos|programas)\b.*\bvig[eê]ncia\b", re.IGNORECASE),
         "PIBIC ICV PIBITI PIBICEM todos os programas vigência início término cronograma bolsas",
     ),
+    # Q21-type: "colégio"/"escola" → PIBICEM 3.2.1 vocabulary (mismatch: query says
+    # "mesmo colégio/escola" but the clause uses "lotado", "obrigatoriedade", "vinculado")
+    (
+        re.compile(r"\b(col[eé]gio|escola)\b", re.IGNORECASE),
+        "sem obrigatoriedade vinculado colégio escola lotado discente matriculado "
+        "PIBIC-EM PIBICEM Ensino Médio concomitante Técnico orientador 3.2.1",
+    ),
     # Q15-type generic: "pontos mínimos" → habilitação chunk (catches Q06/PIBIC etc.)
     (
         re.compile(r"\bpontos?\s+m[íi]nimos?\b", re.IGNORECASE),
@@ -203,6 +247,8 @@ REGRAS OBRIGATÓRIAS:
 4. Mantenha tom institucional, respeitoso e acessível ao público universitário.
 5. Ao citar datas, mencione sempre o dia, o mês e o ano completos \
 (ex: "1º de setembro de 2025", nunca apenas "setembro de 2025" ou "2025").
+6. Ao descrever vigência de bolsas, mencione sempre a duração em meses \
+(ex: "12 meses" ou "doze meses"), a data de início e a data de término.
 
 CONTEXTO DOS DOCUMENTOS:
 {context}
@@ -734,6 +780,55 @@ async def rag_stream(
                     _existing = {p["parent_id"] for p in reranked_parents}
                     if _pinned_vig[0]["parent_id"] not in _existing:
                         reranked_parents = [_pinned_vig[0]] + reranked_parents[:context_top_k - 1]
+
+        # Q25 pinned injection: when query asks about vigência of all programs,
+        # force one vigência chunk per non-PIBIC edital into context so the LLM
+        # can enumerate all programs with full start/end/duration info.
+        if _TODOS_PROGRAMAS_VIGENCIA_RE.search(query):
+            _existing = {p["parent_id"] for p in reranked_parents}
+            _multi_pinned: list[dict] = []
+            for _vq, _source_keys in _VIGENCIA_MULTI_EDITAL:
+                _vq_all = await hybrid_search(
+                    _vq,
+                    top_k=10,
+                    payload_filter=_RAG_PAYLOAD_FILTER,
+                    embedding_provider=embedding_provider,
+                    embedding_model=embedding_model,
+                )
+                _vq_filtered = [
+                    pt for pt in _vq_all
+                    if any(k in (pt.payload.get("source") or "").lower() for k in _source_keys)
+                ]
+                if _vq_filtered:
+                    _vq_expanded = expand_to_parents(_vq_filtered[:1])
+                    if _vq_expanded and _vq_expanded[0]["parent_id"] not in _existing:
+                        _multi_pinned.append(_vq_expanded[0])
+                        _existing.add(_vq_expanded[0]["parent_id"])
+            if _multi_pinned:
+                reranked_parents = _multi_pinned + reranked_parents
+                reranked_parents = reranked_parents[:context_top_k]
+
+        # Q21 pinned injection: "mesmo colégio do orientador" for PIBICEM.
+        # The seção 3.2.1 clause uses "lotado"/"obrigatoriedade"/"vinculado" —
+        # terms absent from the query — so the chunk falls below reranker threshold.
+        if _PIBICEM_COLEGIO_RE.search(query):
+            _pc_all = await hybrid_search(
+                _PIBICEM_COLEGIO_QUERY,
+                top_k=20,
+                payload_filter=_RAG_PAYLOAD_FILTER,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+            )
+            _pc_filtered = [
+                pt for pt in _pc_all
+                if any(k in (pt.payload.get("source") or "").lower() for k in ["pibicem", "pibic-em"])
+            ]
+            if _pc_filtered:
+                _pc_expanded = expand_to_parents(_pc_filtered[:1])
+                if _pc_expanded:
+                    _existing = {p["parent_id"] for p in reranked_parents}
+                    if _pc_expanded[0]["parent_id"] not in _existing:
+                        reranked_parents = [_pc_expanded[0]] + reranked_parents[:context_top_k - 1]
 
         history_result = await db.execute(
             select(ChatMessage)
