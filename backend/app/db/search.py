@@ -131,6 +131,7 @@ def expand_to_parents(points: list[ScoredPoint]) -> list[dict]:
             "page_number": int(payload.get("page_number") or 0),
             "score": point.score,
             "doc_type": payload.get("doc_type", "edital"),
+            "edital_ref": payload.get("edital_ref"),
         }
 
         if parent_id not in seen or point.score > seen[parent_id]["score"]:

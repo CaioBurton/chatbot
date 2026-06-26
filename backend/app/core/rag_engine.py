@@ -37,7 +37,7 @@ from app.db.rag_config import get_rag_config
 from app.db.reranker import rerank
 from app.db.search import expand_to_parents, hybrid_search
 from app.models.chat import ChatMessage, ChatSession
-from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchText, ScoredPoint
+from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchText, MatchValue, ScoredPoint
 
 # Exclude non-editorial document types from RAG retrieval by default.
 # Portarias list program names (causing the reranker to surface them for
@@ -854,6 +854,78 @@ async def rag_stream(
                     _existing = {p["parent_id"] for p in reranked_parents}
                     if _pc_expanded[0]["parent_id"] not in _existing:
                         reranked_parents = [_pc_expanded[0]] + reranked_parents[:context_top_k - 1]
+
+        # ------------------------------------------------------------------ #
+        # edital_ref bidirectional context expansion                         #
+        # Connects aditivos to their parent editais via the edital_ref       #
+        # metadata field. Two directions:                                     #
+        # 1. Forward: aditivo is in context → pull parent edital chunks so   #
+        #    the LLM sees both the original rule and the amendment together.  #
+        # 2. Reverse: edital is in context → pull relevant aditivo chunks    #
+        #    that reference it, surfacing amendments the query would miss     #
+        #    (e.g. updated deadlines in Aditivo nº 2 for Q14).               #
+        # Both directions do Python-side substring matching on display_name   #
+        # vs edital_ref — no Qdrant index required.                          #
+        # ------------------------------------------------------------------ #
+        _eref_existing = {p["parent_id"] for p in reranked_parents}
+
+        # Direction 1 — forward (aditivo in context → parent edital)
+        _aditivo_edital_refs = list(dict.fromkeys(
+            p["edital_ref"]
+            for p in reranked_parents
+            if p.get("doc_type") == "aditivo" and p.get("edital_ref")
+        ))
+        for _eref in _aditivo_edital_refs:
+            _eref_lower = _eref.lower()
+            _eref_pts = await hybrid_search(
+                query,
+                top_k=20,
+                payload_filter=_RAG_PAYLOAD_FILTER,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+            )
+            _eref_filtered = [
+                pt for pt in _eref_pts
+                if _eref_lower in (pt.payload.get("display_name") or "").lower()
+                and (pt.payload.get("doc_type") or "") != "aditivo"
+            ]
+            if _eref_filtered:
+                _eref_expanded = expand_to_parents(_eref_filtered[:2])
+                if _eref_expanded and _eref_expanded[0]["parent_id"] not in _eref_existing:
+                    reranked_parents.append(_eref_expanded[0])
+                    _eref_existing.add(_eref_expanded[0]["parent_id"])
+
+        # Direction 2 — reverse (edital in context → relevant aditivos)
+        _ctx_display_names_lower = {
+            p["display_name"].lower()
+            for p in reranked_parents
+            if p.get("doc_type") != "aditivo" and p.get("display_name")
+        }
+        if _ctx_display_names_lower:
+            _aditivo_only_filter = Filter(
+                must=[FieldCondition(key="doc_type", match=MatchValue(value="aditivo"))],
+            )
+            _aditivo_pts = await hybrid_search(
+                query,
+                top_k=20,
+                payload_filter=_aditivo_only_filter,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+            )
+            _matched_aditivos = [
+                pt for pt in _aditivo_pts
+                if (pt.payload.get("edital_ref") or "") and any(
+                    (pt.payload.get("edital_ref") or "").lower() in dname
+                    or dname in (pt.payload.get("edital_ref") or "").lower()
+                    for dname in _ctx_display_names_lower
+                )
+            ]
+            if _matched_aditivos:
+                _aditivo_expanded = expand_to_parents(_matched_aditivos[:3])
+                for _ap in _aditivo_expanded[:2]:
+                    if _ap["parent_id"] not in _eref_existing:
+                        reranked_parents.append(_ap)
+                        _eref_existing.add(_ap["parent_id"])
 
         history_result = await db.execute(
             select(ChatMessage)
