@@ -1,7 +1,8 @@
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from app.core.limiter import limiter
 
 # Maximum number of session IDs accepted in a single /sessions request.
 _MAX_SESSION_IDS = 100
@@ -63,7 +64,9 @@ async def _optional_user_id(
     status_code=status.HTTP_201_CREATED,
     response_model=ChatSessionResponse,
 )
+@limiter.limit("20/minute")
 async def create_session(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user_id: UUID | None = Depends(_optional_user_id),
 ) -> ChatSessionResponse:
@@ -79,8 +82,10 @@ async def create_session(
 # ---------------------------------------------------------------------------
 
 @router.post("/stream")
+@limiter.limit("5/minute")
 async def chat_stream(
-    request: ChatRequest,
+    request: Request,
+    body: ChatRequest,
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """
@@ -91,23 +96,23 @@ async def chat_stream(
       event: sources — JSON array of SourceCitation objects
       event: done   — always "[DONE]", signals stream end
     """
-    if request.session_id is None:
+    if body.session_id is None:
         session = ChatSession(user_id=None)
         db.add(session)
         await db.flush()
         session_id: UUID = session.id
         await db.commit()
     else:
-        existing = await db.get(ChatSession, request.session_id)
+        existing = await db.get(ChatSession, body.session_id)
         if existing is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Session not found.",
             )
-        session_id = request.session_id
+        session_id = body.session_id
 
     async def generate():
-        async for event_dict in rag_stream(request.message, session_id, db):
+        async for event_dict in rag_stream(body.message, session_id, db):
             event_type = event_dict.get("event", "message")
             data = str(event_dict.get("data", ""))
             # Per SSE spec, multi-line data needs one "data: " prefix per line
