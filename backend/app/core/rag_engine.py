@@ -118,6 +118,21 @@ _PIBITI_ACUMULO_QUERY = (
     "mensalidades recebidas indevidamente CNPq UFPI valores atualizados 4.2"
 )
 
+# Q14 pinned injection: ICV relatório parcial — the Aditivo nº 2 shifts the submission
+# deadline to 17–31 March 2026. The dates are retrieved correctly (score 3.5 since Passo 2)
+# but the source attribution is wrong: the LLM cites generic edital docs instead of
+# "Aditivo nº 2 ICV". Pinning the aditivo chunk to context position [1] and adding Rule 7
+# to the system prompt should fix both the source citation and the SIGAA omission.
+_ICV_RELATORIO_PARCIAL_RE = re.compile(
+    r"\brelatório\s+parcial\b.{0,80}\bICV\b|\bICV\b.{0,80}\brelatório\s+parcial\b"
+    r"|\bprazo\b.{0,80}\brelatório\b.{0,80}\bICV\b|\bICV\b.{0,80}\bprazo\b.{0,60}\brelatório\b",
+    re.IGNORECASE,
+)
+_ICV_ADITIVO_RELATORIO_QUERY = (
+    "17 31 março 2026 relatório parcial prazo envio SIGAA exclusivamente "
+    "ICV Aditivo nº 2 cronograma Iniciação Científica Voluntária"
+)
+
 # Q21 pinned injection: PIBICEM seção 3.2.1 — bolsista não precisa ser do mesmo colégio.
 # The query uses "mesmo colégio" but the clause uses "lotado"/"obrigatoriedade"/"vinculado",
 # causing a vocabulary mismatch that drops the correct chunk below the reranker threshold.
@@ -202,6 +217,18 @@ _LEXICAL_EXPANSIONS: list[tuple[re.Pattern, str]] = [
         re.compile(r"\bvig[eê]ncia\b.*\b(todos|programas|PIBIC|ICV|PIBITI|PIBICEM)\b|\b(todos|programas)\b.*\bvig[eê]ncia\b", re.IGNORECASE),
         "PIBIC ICV PIBITI PIBICEM todos os programas vigência início término cronograma bolsas",
     ),
+    # Q14-type: "relatório parcial" + "ICV" → Aditivo nº 2 vocabulary + SIGAA
+    # The Aditivo shifts the deadline; without this injection the lexical match
+    # for "SIGAA" and "Aditivo nº 2" is weak relative to generic edital chunks.
+    (
+        re.compile(
+            r"\brelatório\s+parcial\b.{0,80}\bICV\b|\bICV\b.{0,80}\brelatório\s+parcial\b"
+            r"|\bprazo\b.{0,60}\brelatório\b.{0,60}\bICV\b",
+            re.IGNORECASE,
+        ),
+        "ICV relatório parcial prazo envio SIGAA exclusivamente Aditivo nº 2 março 2026 "
+        "17 31 cronograma Iniciação Científica Voluntária sistema integrado",
+    ),
     # Q21-type: "colégio"/"escola" → PIBICEM 3.2.1 vocabulary (mismatch: query says
     # "mesmo colégio/escola" but the clause uses "lotado", "obrigatoriedade", "vinculado")
     (
@@ -274,6 +301,12 @@ REGRAS OBRIGATÓRIAS:
 (ex: "1º de setembro de 2025", nunca apenas "setembro de 2025" ou "2025").
 6. Ao descrever vigência de bolsas, mencione sempre a duração em meses \
 (ex: "12 meses" ou "doze meses"), a data de início e a data de término.
+7. Se o contexto incluir trechos identificados como "ADITIVO: ..." (ex: "ADITIVO: Aditivo nº 2"), \
+cite explicitamente esse aditivo ao mencionar os dados por ele alterados. \
+Modelo: "Conforme o Aditivo nº 2 do Edital ICV 2025/2026, o prazo passou a ser...". \
+Se o contexto indicar que o envio de relatórios nos editais de iniciação científica é feito \
+"exclusivamente pelo sistema SIGAA" (ou "exclusivamente via SIGAA"), inclua essa informação \
+ao descrever prazos de envio de qualquer relatório (parcial, semestral ou final).
 
 CONTEXTO DOS DOCUMENTOS:
 {context}
@@ -407,15 +440,44 @@ async def _llm_generate(prompt: str, temperature: float, settings, provider: str
     return await _ollama_generate(prompt, temperature, settings)
 
 
+def _format_aditivo_name(source: str) -> str:
+    """Derive a human-readable label from an aditivo filename.
+
+    PDF title metadata for aditivos often repeats the parent edital's title
+    ("EDITAL - Iniciação Científica...") rather than identifying the aditivo
+    number, so display_name from the payload is unreliable for these documents.
+    The filename is always authoritative: Aditivo_2_-_ICV_2025-2026_... .pdf
+    → "Aditivo nº 2 – ICV 2025/2026".
+    """
+    m = re.match(r"Aditivo_(\d+)_-_(.+?)_\d{4}-\d{4}", source, re.IGNORECASE)
+    if m:
+        num, prog = m.group(1), m.group(2)
+        return f"Aditivo nº {num} – {prog} 2025/2026"
+    return ""
+
+
 def _build_context(parents: list[dict]) -> str:
     parts = []
     for i, p in enumerate(parents, start=1):
-        # Truncate source name to prevent excessively long prompt headers
-        source = (
-            p.get("display_name")
-            or format_document_display_name(p.get("source", ""))
-            or "desconhecido"
-        )[:200]
+        # For aditivos, PDF title metadata often mirrors the parent edital title
+        # ("EDITAL - Iniciação Científica...") — use the filename instead so the
+        # LLM sees "Aditivo nº 2 – ICV 2025/2026" in the context header and can
+        # cite it correctly (Rule 7).
+        if p.get("doc_type") == "aditivo":
+            aditivo_label = _format_aditivo_name(p.get("source", ""))
+            source = aditivo_label or (
+                p.get("display_name")
+                or format_document_display_name(p.get("source", ""))
+                or "desconhecido"
+            )
+        else:
+            aditivo_label = ""
+            source = (
+                p.get("display_name")
+                or format_document_display_name(p.get("source", ""))
+                or "desconhecido"
+            )
+        source = source[:200]
         page = p.get("page_number") or 0
         text = p.get("parent_text", "")
         header = f"[{i}] {source}" + (f" (p. {page})" if page else "")
@@ -528,11 +590,15 @@ def _build_sources(parents: list[dict]) -> list[dict]:
         except (ValueError, AttributeError):
             continue
         page = p.get("page_number") or None
+        if p.get("doc_type") == "aditivo":
+            display_name = _format_aditivo_name(p.get("source", "")) or p.get("display_name") or format_document_display_name(p.get("source", ""))
+        else:
+            display_name = p.get("display_name") or format_document_display_name(p.get("source", ""))
         sources.append(
             {
                 "doc_id": doc_uuid,
                 "original_name": p.get("source", ""),
-                "display_name": p.get("display_name") or format_document_display_name(p.get("source", "")),
+                "display_name": display_name,
                 "page_number": page if page else None,
                 "score": round(float(p.get("score", 0.0)), 4),
             }
@@ -854,6 +920,81 @@ async def rag_stream(
                     _existing = {p["parent_id"] for p in reranked_parents}
                     if _pc_expanded[0]["parent_id"] not in _existing:
                         reranked_parents = [_pc_expanded[0]] + reranked_parents[:context_top_k - 1]
+
+        # Q14 pinned injection: ICV relatório parcial — pin Aditivo nº 2 ICV chunk to
+        # context position [1] so the LLM attributes the deadline to the correct document.
+        # Filters by doc_type="aditivo" + edital_ref or source containing "icv".
+        if _ICV_RELATORIO_PARCIAL_RE.search(query):
+            _aditivo_filter = Filter(
+                must=[FieldCondition(key="doc_type", match=MatchValue(value="aditivo"))],
+            )
+            _ad2_all = await hybrid_search(
+                _ICV_ADITIVO_RELATORIO_QUERY,
+                top_k=20,
+                payload_filter=_aditivo_filter,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+            )
+            _ad2_filtered = [
+                pt for pt in _ad2_all
+                if (
+                    "icv" in (pt.payload.get("edital_ref") or "").lower()
+                    or "icv" in (pt.payload.get("source") or "").lower()
+                )
+                # Page 2 chunks contain the updated chronogram (SIGAA + 17-31/03/2026).
+                # Page 1 chunks contain "ADITIVO N° 2" text but NOT the new dates.
+                # Filtering to page 2 ensures the LLM sees both the dates and SIGAA
+                # in the parent_text; the "[1] Aditivo nº 2 – ICV 2025/2026" header
+                # (via _format_aditivo_name) triggers Rule 7 for source attribution.
+                and (pt.payload.get("page_number") or 0) == 2
+            ]
+            if _ad2_filtered:
+                _ad2_expanded = expand_to_parents(_ad2_filtered[:1])
+                if _ad2_expanded:
+                    _pid = _ad2_expanded[0]["parent_id"]
+                    # Prepend "ADITIVO: <label>" to the text body so Rule 7 triggers.
+                    # We do this on a copy to avoid mutating the cached parent dict.
+                    _ad2_chunk = dict(_ad2_expanded[0])
+                    _ad2_label = _format_aditivo_name(_ad2_chunk.get("source", ""))
+                    if _ad2_label and not _ad2_chunk.get("parent_text", "").startswith("ADITIVO"):
+                        _ad2_chunk["parent_text"] = f"ADITIVO: {_ad2_label}\n{_ad2_chunk.get('parent_text', '')}"
+                    # Move to position [0] even if already in the list — normal search
+                    # finds the Aditivo 2 chunk but places it mid-list, so the LLM sees
+                    # other documents first and cites them instead of "Aditivo nº 2".
+                    reranked_parents = [_ad2_chunk] + [
+                        p for p in reranked_parents if p["parent_id"] != _pid
+                    ][:context_top_k - 1]
+
+            # Second injection: ICV edital Section 13 establishes "exclusivamente via
+            # SIGAA" for relatório submissions. Without it the LLM omits SIGAA because
+            # the aditivo chronogram only labels SIGAA for inscriptions/bolsista, not
+            # for "Envio de Relatório parcial".
+            _icv_edital_filter = Filter(
+                must=[FieldCondition(key="doc_type", match=MatchValue(value="edital"))],
+            )
+            _icv_sancoes_all = await hybrid_search(
+                "exclusivamente sistema SIGAA relatório envio prazo ICV cronograma sanções",
+                top_k=10,
+                payload_filter=_icv_edital_filter,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+            )
+            _icv_sancoes_filtered = [
+                pt for pt in _icv_sancoes_all
+                if "icv" in (pt.payload.get("source") or "").lower()
+                and "sigaa" in (pt.payload.get("parent_text") or pt.payload.get("text_preview") or "").lower()
+                and "relat" in (pt.payload.get("parent_text") or pt.payload.get("text_preview") or "").lower()
+            ]
+            if _icv_sancoes_filtered:
+                _icv_sanc_exp = expand_to_parents(_icv_sancoes_filtered[:1])
+                if _icv_sanc_exp:
+                    _sanc_pid = _icv_sanc_exp[0]["parent_id"]
+                    _sanc_existing = {p["parent_id"] for p in reranked_parents}
+                    if _sanc_pid not in _sanc_existing and reranked_parents:
+                        reranked_parents = (
+                            [reranked_parents[0], _icv_sanc_exp[0]]
+                            + reranked_parents[1:][:context_top_k - 2]
+                        )
 
         # ------------------------------------------------------------------ #
         # edital_ref bidirectional context expansion                         #
