@@ -878,6 +878,34 @@ docker exec propesqi_ollama ollama pull bge-m3
 
 Todos os serviços têm `healthcheck` configurado. O backend aguarda `postgres`, `qdrant` e `ollama` saudáveis antes de iniciar (`depends_on: condition: service_healthy`). O backend tem `start_period: 120s` para acomodar o warmup dos modelos.
 
+### Deploy em nuvem sem Ollama (Gemini para LLM + embeddings)
+
+Para ambientes sem GPU (ex.: instância EC2 na AWS) existe uma variante do
+compose sem o serviço `ollama` e sem reservas de GPU: `docker-compose.aws.yml`
+(build do backend via `backend/Dockerfile.cloud`, que instala PyTorch
+CPU-only para o reranker). O LLM e os embeddings densos passam a ser servidos
+inteiramente pela API do Gemini (`GOOGLE_API_KEY`); reranker (`bge-reranker-v2-m3`)
+e o encoder esparso BM42 continuam rodando localmente, mas em CPU.
+
+```bash
+cp .env.aws.example .env   # preencher GOOGLE_API_KEY e demais segredos
+docker compose -f docker-compose.aws.yml up -d
+```
+
+Guia completo de provisionamento (tipo de instância, security group, TLS) em
+`deploy/aws/README.md`.
+
+Um banco novo já é seedado com `rag_config.llm_provider = 'gemini'` e
+`embedding_provider = 'gemini'`. Se estiver migrando um banco **existente**
+que já tinha documentos indexados com `bge-m3`, troque o provider/model via
+painel admin e depois reindexe tudo — embeddings de providers diferentes não
+são intercambiáveis mesmo com a mesma dimensão de vetor:
+
+```
+POST /api/documents/reindex-all
+Body: {"scope": "all"}
+```
+
 ---
 
 ## 11. Variáveis de Ambiente

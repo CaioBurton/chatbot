@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     QDRANT_URL: str
     QDRANT_API_KEY: str
 
-    # Ollama
-    OLLAMA_BASE_URL: str
+    # Ollama — only required when llm_provider or embedding_provider is "local"
+    OLLAMA_BASE_URL: str = ""
 
     # JWT — no default for SECRET_KEY; must be supplied via env
     SECRET_KEY: str

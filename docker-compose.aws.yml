@@ -1,0 +1,167 @@
+# PROPESQI RAG Chatbot — Docker Compose (AWS / CPU-only, Gemini for LLM + embeddings)
+# No Ollama service, no GPU reservations — LLM and dense embeddings are both
+# served by the Gemini API. The reranker (BAAI/bge-reranker-v2-m3) and the
+# BM42 sparse encoder still run locally on CPU (see backend/Dockerfile.cloud).
+# Usage: docker compose -f docker-compose.aws.yml up -d
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 — relational metadata, sessions, users
+  # NOT published to host; reachable internally as postgres:5432
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: propesqi_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Passed to init/00_roles.sh which creates the limited-privilege app role
+      PROPESQI_APP_PASSWORD: ${PROPESQI_APP_PASSWORD}
+      # Passed to init/02_seed_admin.sh which seeds the first admin user
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - propesqi-net
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -q",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Qdrant — vector database with BM25 + Dense hybrid search
+  # Sparse vector support is native in Qdrant 1.7+; no server-side flag needed.
+  # Collections are created with sparse_vectors config in application code.
+  # Ports 6333 (REST) and 6334 (gRPC) are internal only.
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: propesqi_qdrant
+    environment:
+      # Keep sparse index hot in memory for latency (change to true if RAM is scarce)
+      QDRANT__STORAGE__SPARSE_VECTORS_ON_DISK: "false"
+      # Disable telemetry
+      QDRANT__TELEMETRY_DISABLED: "true"
+      # API key authentication — prevents unauthorized access from other containers
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - propesqi-net
+    healthcheck:
+      # The Qdrant image has bash but not wget/curl.
+      # bash /dev/tcp opens a TCP connection to port 6333; exits 1 if refused.
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && exec 3>&-' 2>/dev/null",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Backend — FastAPI + RAG pipeline (CPU-only image)
+  # LLM + dense embeddings come from the Gemini API (GOOGLE_API_KEY).
+  # Reranker + BM42 sparse encoder run locally on CPU — no GPU needed.
+  # Waits for postgres and qdrant to be healthy before starting.
+  # Port 8000 is internal only; frontend proxies requests via internal network.
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.cloud
+    container_name: propesqi_backend
+    environment:
+      QDRANT_URL: ${QDRANT_URL}
+      DATABASE_URL: ${DATABASE_URL}
+      SECRET_KEY: ${SECRET_KEY}
+      ALGORITHM: ${ALGORITHM}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      # Must match QDRANT__SERVICE__API_KEY set on the qdrant service
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      # Required in this mode — LLM + embeddings both use Gemini
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      # Fine-tuned reranker model path (optional — falls back to BAAI/bge-reranker-v2-m3)
+      RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+    volumes:
+      # Persistent storage for uploaded documents — survives container restarts
+      - uploads_data:/app/uploads
+      # Fine-tuned reranker model — bind mount so the model persists on the host
+      # and survives backend rebuilds. Set RERANKER_MODEL=/app/models/reranker-propesqi
+      # in .env to activate the fine-tuned model after training.
+      - ./backend/models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - propesqi-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--silent",
+          "--fail",
+          "http://localhost:8000/health",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Frontend — React + Vite
+  # The ONLY service with a published host port.
+  # All admin/auth enforcement is done by the FastAPI JWT middleware in backend.
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: propesqi_frontend
+    ports:
+      # 3000 is the only port reachable from the host network
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - propesqi-net
+    restart: unless-stopped
+
+# =============================================================================
+# Named volumes — data persists across container restarts / rebuilds
+# =============================================================================
+volumes:
+  postgres_data:
+  qdrant_data:
+  # Stores raw uploaded files — persists across backend rebuilds/restarts
+  uploads_data:
+
+# =============================================================================
+# Internal bridge network — all inter-service traffic stays inside Docker
+# =============================================================================
+networks:
+  propesqi-net:
+    driver: bridge
