@@ -11,6 +11,8 @@ Supports:
                ranks correctly.
 """
 
+import asyncio
+
 import httpx
 
 # Batch size for both providers' embedding calls — keeps individual HTTP
@@ -18,6 +20,13 @@ import httpx
 _EMBED_BATCH_SIZE = 32
 
 _GEMINI_OUTPUT_DIMENSIONALITY = 1024
+
+# The Gemini embedding free tier (100 RPM) is easily exceeded when a document
+# has more chunks than fit in a couple of batches. Retry on 429 with
+# exponential back-off (honouring Retry-After when the API sends one) instead
+# of failing the whole document.
+_GEMINI_EMBED_MAX_RETRIES = 5
+_GEMINI_EMBED_RETRY_BASE_DELAY = 10.0  # seconds; doubles each attempt
 
 
 async def _ollama_embed_batch(client: httpx.AsyncClient, texts: list[str], model: str, settings) -> list[list[float]]:
@@ -35,27 +44,35 @@ async def _ollama_embed_batch(client: httpx.AsyncClient, texts: list[str], model
 
 
 async def _gemini_embed_batch(client: httpx.AsyncClient, texts: list[str], model: str, settings) -> list[list[float]]:
-    response = await client.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents",
-        params={"key": settings.GOOGLE_API_KEY},
-        json={
-            "requests": [
-                {
-                    "model": f"models/{model}",
-                    "content": {"parts": [{"text": text}]},
-                    "output_dimensionality": _GEMINI_OUTPUT_DIMENSIONALITY,
-                }
-                for text in texts
-            ]
-        },
-        timeout=300.0,
-    )
-    response.raise_for_status()
-    data = response.json()
-    try:
-        return [item["values"] for item in data["embeddings"]]
-    except (KeyError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected Gemini batchEmbedContents response structure: {data}") from exc
+    attempt = 0
+    while True:
+        response = await client.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents",
+            params={"key": settings.GOOGLE_API_KEY},
+            json={
+                "requests": [
+                    {
+                        "model": f"models/{model}",
+                        "content": {"parts": [{"text": text}]},
+                        "output_dimensionality": _GEMINI_OUTPUT_DIMENSIONALITY,
+                    }
+                    for text in texts
+                ]
+            },
+            timeout=300.0,
+        )
+        if response.status_code == 429 and attempt < _GEMINI_EMBED_MAX_RETRIES - 1:
+            retry_after = response.headers.get("Retry-After")
+            delay = float(retry_after) if retry_after else _GEMINI_EMBED_RETRY_BASE_DELAY * (2 ** attempt)
+            await asyncio.sleep(delay)
+            attempt += 1
+            continue
+        response.raise_for_status()
+        data = response.json()
+        try:
+            return [item["values"] for item in data["embeddings"]]
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected Gemini batchEmbedContents response structure: {data}") from exc
 
 
 async def generate_dense_embeddings(texts: list[str], provider: str, model: str, settings) -> list[list[float]]:
