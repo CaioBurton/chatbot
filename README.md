@@ -115,7 +115,7 @@ Query → Normalização → HyDE → Multi-query → Hybrid Search RRF
 
 O painel admin (acesso via login em `/`) permite:
 
-- **Upload de PDFs** — nativos ou escaneados (OCR automático via Tesseract)
+- **Upload de PDFs** — nativos ou escaneados (OCR automático via API cloud LLMWhisperer)
 - **Tipos de documento:** `edital`, `aditivo`, `resolucao`, `tutorial`, `portaria`, `relatorio`
 - **Aditivos:** ao selecionar o tipo `aditivo`, um campo opcional "Edital de referência" aparece. Preenchê-lo com o nome do edital pai (ex.: `Edital ICV 2025/2026`) ativa a expansão bidirecional de contexto no pipeline RAG
 - **Reindexação:** documentos com erro podem ser reprocessados individualmente

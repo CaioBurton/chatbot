@@ -137,7 +137,8 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
   dados indexados são perdidos. Faça backup antes de migrar.
 - **bcrypt versão**: `requirements.txt` fixa `bcrypt>=3.0,<4.0`. bcrypt 4+
   tem API diferente; não atualize sem testar `passlib`.
-- **OCR lento**: PDFs digitalizados passam por OpenCV + Tesseract.
-  Timeout de upload deve ser alto (> 5 min para PDFs grandes).
+- **OCR via API cloud**: PDFs digitalizados são enviados para a API
+  LLMWhisperer (`LLMWHISPERER_API_KEY`), sem Tesseract/OpenCV local. Roda em
+  background task, fora do request de upload.
 - **RAGAS requer LLM**: `app/api/routes/evaluation.py` chama o Ollama para
   métricas RAGAS. Não execute avaliações quando o Ollama não estiver disponível.

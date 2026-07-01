@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     GOOGLE_API_KEY: str = ""
 
+    # LLMWhisperer (cloud OCR for scanned PDFs — no local Tesseract/OpenCV)
+    LLMWHISPERER_API_KEY: str = ""
+    LLMWHISPERER_BASE_URL: str = "https://llmwhisperer-api.us-central.unstract.com/api/v2"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     def allowed_origins_list(self) -> list[str]:

@@ -9,11 +9,10 @@
 # already satisfied and skips the CUDA build entirely.
 #
 # System dependencies installed:
-#   - tesseract-ocr + tesseract-ocr-por : OCR engine with PT-BR language pack
-#   - libgl1 + libglib2.0-0             : OpenCV runtime shared libraries
-#   - poppler-utils                     : pdf2image (pdfinfo, pdftoppm, etc.)
 #   - unoconv + libreoffice-writer      : ODT/DOC → text conversion
 #   - curl                              : used by the Docker healthcheck
+# OCR for scanned PDFs runs on the LLMWhisperer cloud API (see
+# app/ingestion/extractors/ocr.py) — no local Tesseract/OpenCV/poppler needed.
 # =============================================================================
 
 FROM python:3.11-slim AS base
@@ -21,14 +20,6 @@ FROM python:3.11-slim AS base
 # ---- System dependencies -------------------------------------------------- #
 # Combine apt operations in a single layer and clean up to minimise image size.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        # Tesseract 5 OCR engine with Portuguese language data
-        tesseract-ocr \
-        tesseract-ocr-por \
-        # OpenCV runtime libraries (cv2 import requires these)
-        libgl1 \
-        libglib2.0-0 \
-        # pdf2image depends on Poppler utilities (pdftoppm, pdfinfo)
-        poppler-utils \
         # libreoffice-writer: headless ODT/DOC conversion backend (Phase 2)
         # unoconv is installed via pip (not available in Debian bookworm apt repos)
         libreoffice-writer \

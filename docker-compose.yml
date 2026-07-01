@@ -149,6 +149,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      # LLMWhisperer — cloud OCR for scanned PDFs (required to process them)
+      LLMWHISPERER_API_KEY: ${LLMWHISPERER_API_KEY}
       # Fine-tuned reranker model path (optional — falls back to BAAI/bge-reranker-v2-m3)
       RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
     volumes:

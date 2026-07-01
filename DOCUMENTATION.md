@@ -42,7 +42,7 @@ O sistema permite que usuários da UFPI façam perguntas em linguagem natural so
 - Painel administrativo protegido por JWT para upload, gestão e reindexação de documentos
 - Pipeline RAG avançado com 9 estágios: normalização, HyDE, multi-query, busca híbrida RRF, injeções lexicais e pinadas, reranking, expansão edital_ref, compressão contextual e streaming LLM
 - Suporte a LLM local (Ollama/gemma3:12b) e externo (Gemini, OpenAI, Anthropic) — alternável em runtime pelo painel admin
-- Suporte a PDFs nativos e digitalizados (OCR via Tesseract + OpenCV)
+- Suporte a PDFs nativos e digitalizados (OCR via API cloud LLMWhisperer)
 - Vinculação de aditivos ao edital de referência (`edital_ref`) com expansão bidirecional de contexto no RAG
 
 ---
@@ -86,7 +86,7 @@ O sistema permite que usuários da UFPI façam perguntas em linguagem natural so
      ┌──────────────▼──────────────────────────────────────┐
      │             Pipeline de Ingestão de Documentos      │
      │  PDF nativo  →  pdfplumber / pypdf                   │
-     │  PDF scan    →  OpenCV + Tesseract OCR               │
+     │  PDF scan    →  LLMWhisperer OCR (API cloud)         │
      │  Chunking    →  Parent-Child (tiktoken cl100k_base)  │
      │  Payload     →  doc_type + edital_ref por chunk      │
      │  Embeddings  →  bge-m3 via Ollama (batches de 32)    │
@@ -120,7 +120,7 @@ O sistema permite que usuários da UFPI façam perguntas em linguagem natural so
 | Modelo de embeddings | BAAI/bge-m3 (Ollama) | 1024 dims |
 | Encoder esparso | fastembed BM42 | ≥ 0.3 |
 | Reranker | BAAI/bge-reranker-v2-m3 (sentence-transformers) | — |
-| OCR | Tesseract 5 + OpenCV | — |
+| OCR | LLMWhisperer (API cloud, Unstract) | — |
 | Tokenizer | tiktoken (cl100k_base) | ≥ 0.6 |
 | Autenticação | JWT (python-jose) + bcrypt | — |
 | Avaliação RAG | RAGAS | ≥ 0.1 |
@@ -179,7 +179,7 @@ chatbot/
 │       │   ├── sparse.py       # Encoder esparso BM42 via fastembed
 │       │   └── extractors/
 │       │       ├── pdf.py      # Extração nativa (pdfplumber/pypdf)
-│       │       └── ocr.py      # OCR com OpenCV + Tesseract
+│       │       └── ocr.py      # OCR via API cloud LLMWhisperer
 │       ├── models/             # SQLAlchemy ORM models
 │       └── schemas/            # Pydantic request/response schemas
 │
@@ -494,7 +494,7 @@ uploaded → processing → error   (falha)
 
 **Etapas:**
 
-1. **Extração de texto** — tenta extração nativa (`pdfplumber`/`pypdf`). Se o PDF for digitalizado (pouco texto extraído), executa OCR com OpenCV + Tesseract
+1. **Extração de texto** — tenta extração nativa (`pdfplumber`/`pypdf`). Se o PDF for digitalizado (pouco texto extraído), envia para OCR via API cloud LLMWhisperer
 2. **Resolução de display_name** — usa título extraído do PDF, metadado `Title`, ou nome do arquivo original (nessa ordem de preferência)
 3. **Chunking hierárquico** (`app/ingestion/chunker.py`) — divide o texto em chunks pai (512 tokens) e filho (128 tokens) usando tiktoken `cl100k_base`. Tamanhos configuráveis via `rag_config`
 4. **Embedding denso** — chamadas em batch ao Ollama `/api/embed` com `bge-m3` (batch de 32)

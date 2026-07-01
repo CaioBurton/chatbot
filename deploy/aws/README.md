@@ -46,6 +46,10 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # QDRANT_API_KEY
 `GOOGLE_API_KEY` é obrigatório neste modo (LLM e embeddings via Gemini).
 Gere uma chave em https://aistudio.google.com/apikey.
 
+`LLMWHISPERER_API_KEY` também é obrigatório se houver PDFs escaneados a
+processar — o OCR roda inteiramente na API do LLMWhisperer, sem Tesseract/
+OpenCV locais. Gere uma chave em https://unstract.com/llmwhisperer/.
+
 Transfira o repositório e o `.env` preenchido para a instância (nunca versione
 o `.env`):
 

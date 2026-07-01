@@ -1,142 +1,105 @@
+"""
+extractors/ocr.py — OCR for scanned PDFs via the LLMWhisperer cloud API.
+
+Replaces the previous local pipeline (pdf2image + OpenCV preprocessing +
+Tesseract) so no OCR model/binary runs on the app server. Submits the PDF to
+LLMWhisperer's /whisper endpoint, polls /whisper-status until processed, then
+retrieves the extracted text once (the API only allows a single retrieval per
+job) and splits it on the page separator to rebuild per-page entries.
+"""
+
 import asyncio
-import math
 from typing import Any
 
-import cv2
-import numpy as np
-import pytesseract
-from pdf2image import convert_from_path, pdfinfo_from_path
+import httpx
 
-# Maximum plausible skew angle for a text document.
-# Beyond this the moment estimate is unreliable (e.g. pages with large
-# filled shapes or solid borders) and rotation would destroy readability.
-_MAX_DESKEW_ANGLE_DEG: float = 45.0
+from app.core.config import get_settings
+
+_PAGE_SEPARATOR = "<<<"
+_POLL_INTERVAL_SECONDS = 5.0
+_MAX_POLL_SECONDS = 600.0
 
 
-def _deskew(image: np.ndarray) -> np.ndarray:
-    """
-    Deskew a binary image using image moments.
+async def _submit_whisper_job(client: httpx.AsyncClient, file_path: str, settings) -> str:
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
 
-    Computes the skew angle from the second-order central moments and applies
-    an affine rotation.  Skips rotation when |angle| < 0.5° to avoid
-    introducing interpolation artefacts on already-straight pages.
-    """
-    moments = cv2.moments(image, binaryImage=True)
-    mu11 = moments["mu11"]
-    mu20 = moments["mu20"]
-    mu02 = moments["mu02"]
-
-    # Guard against blank / near-blank pages where moments are ~0
-    if abs(mu20 - mu02) < 1e-6 and abs(mu11) < 1e-6:
-        return image
-
-    angle_rad = 0.5 * math.atan2(2.0 * mu11, mu20 - mu02)
-    angle_deg = math.degrees(angle_rad)
-
-    # Skip trivial rotations; clamp extreme angles that indicate a bad
-    # moment estimate rather than real skew.
-    if abs(angle_deg) < 0.5 or abs(angle_deg) > _MAX_DESKEW_ANGLE_DEG:
-        return image
-
-    h, w = image.shape[:2]
-    center = (w / 2.0, h / 2.0)
-    rotation_matrix = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
-    rotated = cv2.warpAffine(
-        image,
-        rotation_matrix,
-        (w, h),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_REPLICATE,
+    response = await client.post(
+        f"{settings.LLMWHISPERER_BASE_URL}/whisper",
+        params={
+            "mode": "high_quality",
+            "output_mode": "text",
+            "page_separator": _PAGE_SEPARATOR,
+        },
+        headers={
+            "unstract-key": settings.LLMWHISPERER_API_KEY,
+            "Content-Type": "application/octet-stream",
+        },
+        content=file_bytes,
+        timeout=120.0,
     )
-    return rotated
+    response.raise_for_status()
+    return response.json()["whisper_hash"]
 
 
-def _preprocess_and_ocr(pil_image: Any) -> str:
-    """
-    Preprocess a single PIL image and run Tesseract OCR.
-
-    Normalises the PIL mode to RGB first so that cv2 colour conversion
-    never receives an unexpected number of channels (e.g. RGBA from a PDF
-    with transparency, or CMYK / P / L from non-standard renderings).
-
-    Preprocessing pipeline (applied in order):
-        1. Normalise to RGB (handles RGBA, CMYK, L, P, …)
-        2. RGB → grayscale
-        3. Gaussian denoise  (3×3 kernel)
-        4. Otsu binarization (THRESH_BINARY + THRESH_OTSU)
-        5. Deskew via image moments (skipped when |angle| < 0.5° or > 45°)
-    """
-    # Normalise to RGB regardless of source mode — prevents channel-count
-    # mismatches inside cv2.cvtColor when pdf2image returns RGBA, CMYK, etc.
-    if pil_image.mode != "RGB":
-        pil_image = pil_image.convert("RGB")
-
-    img = np.array(pil_image)
-
-    # Step 1: Convert to grayscale
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-
-    # Step 2: Gaussian denoise (3×3 kernel, σ determined automatically)
-    denoised = cv2.GaussianBlur(gray, (3, 3), 0)
-
-    # Step 3: Otsu binarization
-    _, binary = cv2.threshold(
-        denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
-
-    # Step 4: Deskew
-    deskewed = _deskew(binary)
-
-    # OCR — Portuguese language pack, PSM 1 (auto page segmentation + OSD),
-    # OEM 3 (LSTM engine only, best accuracy for modern Tesseract builds)
-    return pytesseract.image_to_string(
-        deskewed,
-        lang="por",
-        config="--psm 1 --oem 3",
-    )
-
-
-def _sync_extract_ocr(file_path: str) -> list[dict[str, Any]]:
-    """
-    Render each PDF page to a PIL image at 300 DPI, apply OpenCV preprocessing,
-    then run Tesseract OCR.  Called inside a thread-pool executor.
-
-    Pages are rendered one at a time (first_page / last_page) so memory usage
-    is O(1 page) instead of O(total pages).  Without this, a large scanned PDF
-    at 300 DPI could exhaust container memory.
-    """
-    info = pdfinfo_from_path(file_path)
-    total_pages: int = info.get("Pages", 0)
-    pages: list[dict[str, Any]] = []
-
-    for page_num in range(1, total_pages + 1):
-        pil_images = convert_from_path(
-            file_path, dpi=300, first_page=page_num, last_page=page_num
+async def _wait_until_processed(client: httpx.AsyncClient, whisper_hash: str, settings) -> None:
+    elapsed = 0.0
+    while elapsed < _MAX_POLL_SECONDS:
+        response = await client.get(
+            f"{settings.LLMWHISPERER_BASE_URL}/whisper-status",
+            params={"whisper_hash": whisper_hash},
+            headers={"unstract-key": settings.LLMWHISPERER_API_KEY},
+            timeout=30.0,
         )
-        if not pil_images:
-            # Renderer returned nothing for this page — record empty text so
-            # page numbering stays contiguous.
-            pages.append({"page_number": page_num, "text": ""})
-            continue
+        response.raise_for_status()
+        status = response.json()["status"]
+        if status == "processed":
+            return
+        if status == "error":
+            raise RuntimeError(f"LLMWhisperer job {whisper_hash} failed: {response.text}")
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+        elapsed += _POLL_INTERVAL_SECONDS
+    raise TimeoutError(
+        f"LLMWhisperer job {whisper_hash} did not finish within {_MAX_POLL_SECONDS:.0f}s"
+    )
 
-        text = _preprocess_and_ocr(pil_images[0])
-        pages.append({"page_number": page_num, "text": text})
 
-    return pages
+async def _retrieve_result(client: httpx.AsyncClient, whisper_hash: str, settings) -> dict[str, Any]:
+    response = await client.get(
+        f"{settings.LLMWHISPERER_BASE_URL}/whisper-retrieve",
+        params={"whisper_hash": whisper_hash},
+        headers={"unstract-key": settings.LLMWHISPERER_API_KEY},
+        timeout=60.0,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 async def extract_pdf_ocr(file_path: str) -> list[dict[str, Any]]:
     """
-    Extract text from a scanned PDF using OCR, page by page.
-
-    Each page is rendered at 300 DPI, preprocessed (grayscale → denoise →
-    binarise → deskew), then passed to Tesseract with the Portuguese language
-    pack.  CPU-bound work is offloaded to the default thread-pool executor so
-    the event loop is not blocked.
+    Extract text from a scanned PDF using the LLMWhisperer cloud OCR API.
 
     Returns:
         List of {"page_number": int, "text": str} dicts, one per page.
         Same schema as extract_pdf() in extractors/pdf.py.
     """
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _sync_extract_ocr, file_path)
+    settings = get_settings()
+    if not settings.LLMWHISPERER_API_KEY:
+        raise RuntimeError(
+            "LLMWHISPERER_API_KEY is not configured — required to OCR scanned PDFs."
+        )
+
+    async with httpx.AsyncClient() as client:
+        whisper_hash = await _submit_whisper_job(client, file_path, settings)
+        await _wait_until_processed(client, whisper_hash, settings)
+        result = await _retrieve_result(client, whisper_hash, settings)
+
+    # result_text has a trailing separator + form-feed after the last page,
+    # which would otherwise show up as a spurious empty extra page — trim the
+    # split to the page count the API itself reports for this document.
+    raw_pages = [page.strip() for page in result["result_text"].split(_PAGE_SEPARATOR)]
+    total_pages = result.get("whisper_metadata", {}).get("total_page_count")
+    if total_pages is not None:
+        raw_pages = raw_pages[:total_pages]
+
+    return [{"page_number": i, "text": page_text} for i, page_text in enumerate(raw_pages, start=1)]

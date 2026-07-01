@@ -28,7 +28,7 @@ Sistema de perguntas e respostas sobre documentos internos da **Pró-Reitoria de
 | Embeddings | `bge-m3` (BAAI, 1024 dims) via Ollama |
 | Reranker | `BAAI/bge-reranker-v2-m3` via sentence-transformers (CPU) |
 | Encoder esparso | BM42 via fastembed |
-| OCR | Tesseract 5 + OpenCV + pytesseract |
+| OCR | LLMWhisperer (API cloud, Unstract) |
 | Tokenizer | tiktoken `cl100k_base` |
 | Autenticação | JWT HS256 + bcrypt (python-jose + passlib) |
 | Avaliação RAG | RAGAS |
@@ -76,7 +76,7 @@ chatbot/
 │       │   ├── sparse.py        ← encoder esparso BM42
 │       │   └── extractors/
 │       │       ├── pdf.py       ← extração nativa (pdfplumber/pypdf)
-│       │       └── ocr.py       ← OCR com OpenCV + Tesseract
+│       │       └── ocr.py       ← OCR via API cloud LLMWhisperer
 │       ├── models/              ← SQLAlchemy ORM models
 │       └── schemas/             ← Pydantic request/response schemas
 └── frontend/
