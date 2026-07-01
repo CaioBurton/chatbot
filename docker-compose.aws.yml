@@ -101,6 +101,8 @@ services:
       LLMWHISPERER_API_KEY: ${LLMWHISPERER_API_KEY}
       # Fine-tuned reranker model path (optional — falls back to BAAI/bge-reranker-v2-m3)
       RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      # Max documents ingested at once (optional — defaults to 1; raise on bigger instances)
+      MAX_CONCURRENT_INGESTIONS: ${MAX_CONCURRENT_INGESTIONS:-1}
     volumes:
       # Persistent storage for uploaded documents — survives container restarts
       - uploads_data:/app/uploads

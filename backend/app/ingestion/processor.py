@@ -4,6 +4,7 @@
 # (BM42 via fastembed). text_preview added to Qdrant payload so hybrid search results
 # can surface it without a secondary PostgreSQL lookup.
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -29,6 +30,13 @@ settings = get_settings()
 
 _EMBED_BATCH_SIZE = 32
 _QDRANT_BATCH_SIZE = 100
+
+# Caps how many documents are actively processed (OCR/chunking/embedding/
+# reranker warmup, etc.) at the same time. Uploading many large PDFs at once
+# on a small instance can exhaust RAM and get the backend OOM-killed
+# mid-ingestion, leaving documents stuck in "processing" forever. Extra
+# uploads simply wait their turn instead of running in parallel.
+_INGESTION_SEMAPHORE = asyncio.Semaphore(settings.MAX_CONCURRENT_INGESTIONS)
 
 
 async def _safe_publish(doc_id: str, event: dict) -> None:
@@ -65,7 +73,21 @@ async def process_document(
 
     This function must never raise — a crash here would silently kill the
     background task without updating the document status.
+
+    Acquires _INGESTION_SEMAPHORE first — a document queued behind others
+    stays in "uploaded" until it's actually its turn to process.
     """
+    async with _INGESTION_SEMAPHORE:
+        await _process_document(document_id, file_path, original_name, doc_type, edital_ref)
+
+
+async def _process_document(
+    document_id: str,
+    file_path: str,
+    original_name: str,
+    doc_type: str = "edital",
+    edital_ref: str | None = None,
+) -> None:
     doc_uuid = uuid.UUID(document_id)
 
     async with AsyncSessionLocal() as db:

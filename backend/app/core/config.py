@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     LLMWHISPERER_API_KEY: str = ""
     LLMWHISPERER_BASE_URL: str = "https://llmwhisperer-api.us-central.unstract.com/api/v2"
 
+    # Caps concurrent document ingestions (see app/ingestion/processor.py).
+    # Keep low on small instances — each ingestion holds the reranker/BM42
+    # models and embedding batches in memory at once.
+    MAX_CONCURRENT_INGESTIONS: int = Field(1, ge=1, le=20)
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     def allowed_origins_list(self) -> list[str]:
