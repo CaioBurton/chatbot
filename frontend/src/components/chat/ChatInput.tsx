@@ -25,10 +25,10 @@ export default function ChatInput({ onSend, disabled, onStop }: Props) {
   }
 
   return (
-    <div className="px-4 pb-4 pt-2 bg-[#fafafa] dark:bg-[#1e1e1e]">
-      <div className="max-w-3xl mx-auto">
+    <div className="px-4 pt-2.5 pb-4 bg-[#fdfcfa] dark:bg-[#16181c] transition-colors">
+      <div className="max-w-[720px] mx-auto">
         {/* Card */}
-        <div className="bg-white dark:bg-[#2d2d2d] rounded-2xl border border-[#e0d9d0] dark:border-[#444] shadow-sm">
+        <div className="bg-white dark:bg-[#1d2126] rounded-[18px] border border-[#e6e1d5] dark:border-[#33383f] shadow-[0_1px_3px_rgba(30,25,15,0.06)] dark:shadow-none">
           <textarea
             value={value}
             onChange={e => setValue(e.target.value)}
@@ -36,25 +36,25 @@ export default function ChatInput({ onSend, disabled, onStop }: Props) {
             disabled={disabled}
             placeholder="Mensagem ChatBot..."
             rows={1}
-            className="w-full resize-none px-4 pt-4 pb-2 rounded-2xl text-[0.9rem] min-h-[52px] max-h-40 overflow-y-auto leading-[1.6] bg-transparent text-[#111] dark:text-[#e8e8e8] placeholder-[#aaa] dark:placeholder-[#666] outline-none border-none"
+            className="w-full resize-none px-4 pt-3.5 pb-1.5 rounded-[18px] text-[14.5px] min-h-[52px] max-h-40 overflow-y-auto leading-[1.55] bg-transparent text-[#1e2128] dark:text-[#eceae7] placeholder-[#a19e96] dark:placeholder-[#6c717a] outline-none border-none"
           />
           {/* Bottom action bar */}
-          <div className="flex items-center justify-end px-3 pb-3 pt-1">
+          <div className="flex items-center justify-end px-2.5 pb-2.5 pt-1">
             {disabled ? (
               <button
                 type="button"
                 onClick={onStop}
-                className="w-9 h-9 flex items-center justify-center rounded-full bg-[#c0392b] text-white hover:bg-[#a93226] transition-colors active:scale-95"
+                className="w-[34px] h-[34px] flex items-center justify-center rounded-full bg-[#c0392b] dark:bg-[#e0685c] text-white hover:opacity-90 transition-opacity active:scale-95"
                 title="Parar geração"
               >
-                <Square size={15} fill="currentColor" />
+                <Square size={14} fill="currentColor" />
               </button>
             ) : (
               <button
                 type="button"
                 onClick={handleSend}
                 disabled={!value.trim()}
-                className="w-9 h-9 flex items-center justify-center rounded-full bg-[#0078d4] disabled:bg-[#ddd] dark:disabled:bg-[#555] text-white cursor-pointer disabled:cursor-not-allowed hover:bg-[#006ab8] disabled:hover:bg-[#ddd] dark:disabled:hover:bg-[#555] transition-colors active:scale-95"
+                className="w-[34px] h-[34px] flex items-center justify-center rounded-full bg-[#2c4a86] dark:bg-[#8596b9] disabled:bg-[#e6e1d5] dark:disabled:bg-[#33383f] text-white dark:text-[#101317] disabled:text-[#a19e96] cursor-pointer disabled:cursor-not-allowed hover:bg-[#20396a] dark:hover:bg-[#abb7cf] disabled:hover:bg-[#e6e1d5] dark:disabled:hover:bg-[#33383f] transition-colors active:scale-95"
                 title="Enviar mensagem"
               >
                 <Send size={15} />
@@ -64,7 +64,7 @@ export default function ChatInput({ onSend, disabled, onStop }: Props) {
         </div>
 
         {/* Disclaimer */}
-        <p className="text-center text-[0.72rem] text-[#aaa] dark:text-[#666] mt-2">
+        <p className="text-center text-[11px] text-[#a19e96] dark:text-[#6c717a] mt-2">
           O ChatBot pode cometer erros. Considere verificar informações importantes.
         </p>
       </div>

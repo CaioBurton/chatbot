@@ -1,4 +1,3 @@
-import { MessageSquareText } from 'lucide-react'
 import propesqiLogo from '../../images/propesqi_perfil azul 2.png'
 
 interface Props {
@@ -14,24 +13,24 @@ const SUGGESTIONS = [
 
 export default function WelcomeScreen({ onSend }: Props) {
   return (
-    <div className="m-auto max-w-2xl w-full px-4 text-center animate-fade-in">
-      <img src={propesqiLogo} alt="" className="w-20 h-20 rounded-full mx-auto mb-4" />
-      <h1 className="text-xl font-semibold text-[#111] dark:text-[#e8e8e8] mb-2">
+    <div className="m-auto max-w-[640px] w-full px-3 text-center animate-fade-in">
+      <img src={propesqiLogo} alt="" className="w-[72px] h-[72px] rounded-full mx-auto mb-5" />
+      <h1 className="font-serif font-semibold text-[26px] text-[#1e2128] dark:text-[#eceae7] mb-2.5">
         Como posso ajudar?
       </h1>
-      <p className="text-sm opacity-60 text-[#111] dark:text-[#e8e8e8] mb-6">
+      <p className="text-[14.5px] leading-[1.6] text-[#6c7078] dark:text-[#9da2aa] mb-7 mx-auto max-w-[480px]">
         Sou o assistente virtual da PROPESQI/UFPI. Posso responder dúvidas sobre
         editais, bolsas, prazos e procedimentos da Pró-Reitoria de Pesquisa e Inovação.
       </p>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-left">
         {SUGGESTIONS.map(s => (
           <button
             key={s}
             type="button"
             onClick={() => onSend(s)}
-            className="flex items-start gap-2 text-left rounded-xl border border-[#ddd] dark:border-[#444] bg-white dark:bg-[#2d2d2d] px-4 py-3 text-sm text-[#111] dark:text-[#e8e8e8] hover:border-[#0078d4] hover:bg-[#e3f2fd] dark:hover:bg-[#1a4a6e] cursor-pointer transition-colors"
+            className="flex items-start gap-2 text-left rounded-xl border border-[#e6e1d5] dark:border-[#33383f] bg-white dark:bg-[#1d2126] px-3.5 py-3 text-[13.5px] leading-[1.4] text-[#1e2128] dark:text-[#eceae7] hover:border-[#2c4a86] dark:hover:border-[#8596b9] hover:bg-[#e8edf7] dark:hover:bg-[#182236] cursor-pointer transition-colors"
           >
-            <MessageSquareText size={15} className="mt-0.5 shrink-0 text-[#0078d4]" />
+            <span className="text-[#2c4a86] dark:text-[#8596b9] shrink-0">›</span>
             {s}
           </button>
         ))}
