@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     # models and embedding batches in memory at once.
     MAX_CONCURRENT_INGESTIONS: int = Field(1, ge=1, le=20)
 
+    # Caps concurrent /chat/stream pipelines in flight (see app/api/routes/chat.py).
+    # Each request already fans out several concurrent Gemini calls (HyDE,
+    # multi-query, contextual compression) plus a CPU-bound reranker pass —
+    # a handful of simultaneous requests on a small CPU-only instance is
+    # enough to OOM-kill the container. Extra requests simply queue.
+    MAX_CONCURRENT_CHAT_REQUESTS: int = Field(3, ge=1, le=50)
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     def allowed_origins_list(self) -> list[str]:

@@ -103,6 +103,9 @@ services:
       RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
       # Max documents ingested at once (optional — defaults to 1; raise on bigger instances)
       MAX_CONCURRENT_INGESTIONS: ${MAX_CONCURRENT_INGESTIONS:-1}
+      # Max /chat/stream requests processed at once (optional — defaults to 3;
+      # lower on small CPU-only instances to avoid OOM under concurrent load)
+      MAX_CONCURRENT_CHAT_REQUESTS: ${MAX_CONCURRENT_CHAT_REQUESTS:-3}
     volumes:
       # Persistent storage for uploaded documents — survives container restarts
       - uploads_data:/app/uploads

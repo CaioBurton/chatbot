@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from uuid import UUID
 
@@ -21,6 +22,15 @@ from app.schemas.chat import ChatMessageResponse, ChatRequest, ChatSessionRespon
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 logger = logging.getLogger(__name__)
+
+settings = get_settings()
+
+# Caps how many /chat/stream pipelines run at the same time (see
+# Settings.MAX_CONCURRENT_CHAT_REQUESTS). Without this, a burst of requests
+# can each fan out concurrent Gemini calls plus a CPU-bound reranker pass and
+# OOM-kill the backend container on small instances. Extra requests simply
+# wait their turn instead of running in parallel.
+_CHAT_SEMAPHORE = asyncio.Semaphore(settings.MAX_CONCURRENT_CHAT_REQUESTS)
 
 # Optional bearer — returns None when no token is supplied instead of 401.
 _oauth2_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
@@ -112,12 +122,15 @@ async def chat_stream(
         session_id = body.session_id
 
     async def generate():
-        async for event_dict in rag_stream(body.message, session_id, db):
-            event_type = event_dict.get("event", "message")
-            data = str(event_dict.get("data", ""))
-            # Per SSE spec, multi-line data needs one "data: " prefix per line
-            data_lines = "\n".join(f"data: {line}" for line in data.split("\n"))
-            yield f"event: {event_type}\n{data_lines}\n\n".encode("utf-8")
+        # Held for the whole stream duration — a request queued behind
+        # others simply waits before its pipeline starts.
+        async with _CHAT_SEMAPHORE:
+            async for event_dict in rag_stream(body.message, session_id, db):
+                event_type = event_dict.get("event", "message")
+                data = str(event_dict.get("data", ""))
+                # Per SSE spec, multi-line data needs one "data: " prefix per line
+                data_lines = "\n".join(f"data: {line}" for line in data.split("\n"))
+                yield f"event: {event_type}\n{data_lines}\n\n".encode("utf-8")
 
     return StreamingResponse(
         generate(),
