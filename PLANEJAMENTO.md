@@ -556,8 +556,7 @@ propesqi-chatbot/
 │   ├── package.json
 │   └── Dockerfile
 │
-├── docker-compose.yml
-├── docker-compose.gpu.yml           # override com GPU passthrough
+├── docker-compose.aws.yml           # único compose file na branch feature/aws-gemini-deploy
 ├── .env.example
 └── PLANEJAMENTO.md
 ```

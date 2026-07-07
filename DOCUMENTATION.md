@@ -132,8 +132,7 @@ O sistema permite que usuários da UFPI façam perguntas em linguagem natural so
 
 ```
 chatbot/
-├── docker-compose.yml          # Stack completo com GPU habilitada por padrão
-├── docker-compose.gpu.yml      # Overlay para count: all (multi-GPU)
+├── docker-compose.aws.yml      # Único compose file nesta branch (modo cloud/AWS, sem Ollama/GPU)
 ├── README.md                   # Guia de início rápido e visão geral
 ├── CLAUDE.md                   # Instruções para Claude Code
 ├── AGENTS.md                   # Convenções de arquitetura para agentes
@@ -842,50 +841,15 @@ Os scripts em `init/` são executados pelo container do PostgreSQL na **primeira
 2. `01_schema.sql` — cria tabelas, índices, extensões, trigger e seeds do `rag_config`. Todas as operações são idempotentes via `CREATE ... IF NOT EXISTS` e `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
 3. `02_seed_admin.sh` — insere o primeiro usuário admin (e-mail e senha de `ADMIN_EMAIL`/`ADMIN_PASSWORD`). Idempotente: não cria duplicata se já existir
 
-### GPU habilitada por padrão
+### Modo cloud/AWS (sem Ollama, sem GPU)
 
-```bash
-# Pré-requisito: nvidia-container-toolkit instalado e configurado
-docker compose up -d
-```
-
-O `docker-compose.yml` já inclui `deploy.resources.reservations` para GPU em `backend` e `ollama`. Para usar todas as GPUs disponíveis em hardware multi-GPU:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-```
-
-### Rebuild após mudanças de código
-
-```bash
-# Após editar arquivos Python do backend
-docker compose build backend && docker compose up -d backend
-
-# Após editar React/TypeScript do frontend
-docker compose build frontend && docker compose up -d frontend
-```
-
-### Baixar modelos no Ollama (primeira vez)
-
-Os modelos são baixados automaticamente pelo warmup do backend na primeira inicialização. Para baixar manualmente:
-
-```bash
-docker exec propesqi_ollama ollama pull gemma3:12b
-docker exec propesqi_ollama ollama pull bge-m3
-```
-
-### Health checks
-
-Todos os serviços têm `healthcheck` configurado. O backend aguarda `postgres`, `qdrant` e `ollama` saudáveis antes de iniciar (`depends_on: condition: service_healthy`). O backend tem `start_period: 120s` para acomodar o warmup dos modelos.
-
-### Deploy em nuvem sem Ollama (Gemini para LLM + embeddings)
-
-Para ambientes sem GPU (ex.: instância EC2 na AWS) existe uma variante do
-compose sem o serviço `ollama` e sem reservas de GPU: `docker-compose.aws.yml`
-(build do backend via `backend/Dockerfile.cloud`, que instala PyTorch
-CPU-only para o reranker). O LLM e os embeddings densos passam a ser servidos
-inteiramente pela API do Gemini (`GOOGLE_API_KEY`); reranker (`bge-reranker-v2-m3`)
-e o encoder esparso BM42 continuam rodando localmente, mas em CPU.
+Esta branch roda exclusivamente neste modo — `docker-compose.yml` e
+`docker-compose.gpu.yml` (variantes local/híbrido com Ollama e GPU) foram
+removidos. O único compose file é `docker-compose.aws.yml` (build do backend
+via `backend/Dockerfile.cloud`, que instala PyTorch CPU-only para o
+reranker). O LLM e os embeddings densos são servidos inteiramente pela API
+do Gemini (`GOOGLE_API_KEY`); reranker (`bge-reranker-v2-m3`) e o encoder
+esparso BM42 continuam rodando localmente, mas em CPU.
 
 ```bash
 cp .env.aws.example .env   # preencher GOOGLE_API_KEY e demais segredos
@@ -894,6 +858,20 @@ docker compose -f docker-compose.aws.yml up -d
 
 Guia completo de provisionamento (tipo de instância, security group, TLS) em
 `deploy/aws/README.md`.
+
+### Rebuild após mudanças de código
+
+```bash
+# Após editar arquivos Python do backend
+docker compose -f docker-compose.aws.yml build backend && docker compose -f docker-compose.aws.yml up -d backend
+
+# Após editar React/TypeScript do frontend
+docker compose -f docker-compose.aws.yml build frontend && docker compose -f docker-compose.aws.yml up -d frontend
+```
+
+### Health checks
+
+Todos os serviços têm `healthcheck` configurado. O backend aguarda `postgres` e `qdrant` saudáveis antes de iniciar (`depends_on: condition: service_healthy`).
 
 Um banco novo já é seedado com `rag_config.llm_provider = 'gemini'` e
 `embedding_provider = 'gemini'`. Se estiver migrando um banco **existente**
@@ -976,9 +954,9 @@ locust -f tests/load/locustfile.py --host=http://localhost:8000 \
 Script offline que avalia o pipeline contra 30 perguntas com gabarito e retorna uma pontuação média 0–5.
 
 **Pré-requisitos:**
-- Stack Docker rodando (backend, Qdrant, Ollama)
+- Stack Docker rodando via `docker-compose.aws.yml` (backend, Postgres, Qdrant)
 - `GOOGLE_API_KEY` configurada (judge usa Gemini API)
-- Backend configurado com `llm_provider=gemini` e `llm_model=gemini-3.1-flash-lite` no `rag_config` (ou `local` para usar Ollama)
+- Backend configurado com `llm_provider=gemini` e `llm_model=gemini-3.1-flash-lite` no `rag_config`
 
 ```bash
 cd backend

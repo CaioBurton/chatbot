@@ -55,6 +55,16 @@ DEFAULT_BASE_URL = "http://localhost:3000/api"
 _MIN_GEMINI_INTERVAL = 0.0
 _last_gemini_call = 0.0
 
+# app/api/routes/chat.py caps POST /chat/stream at 5/minute per client IP
+# (slowapi). With every RAG technique disabled the pipeline can answer in
+# under a second, so firing the 30 groundtruth questions back-to-back trips
+# that cap long before it ever did with HyDE/multiquery/rerank in the loop
+# (~13s/question naturally kept us under it). Pace to slightly over 12s
+# between /chat/stream calls so this harness respects the same limit real
+# clients face, regardless of how fast the configured pipeline happens to be.
+_MIN_CHAT_STREAM_INTERVAL = 12.5
+_last_chat_stream_call = 0.0
+
 
 def _rate_limit_gemini() -> None:
     global _last_gemini_call
@@ -63,6 +73,15 @@ def _rate_limit_gemini() -> None:
     if wait > 0:
         time.sleep(wait)
     _last_gemini_call = time.monotonic()
+
+
+def _rate_limit_chat_stream() -> None:
+    global _last_chat_stream_call
+    now = time.monotonic()
+    wait = _MIN_CHAT_STREAM_INTERVAL - (now - _last_chat_stream_call)
+    if wait > 0:
+        time.sleep(wait)
+    _last_chat_stream_call = time.monotonic()
 
 FIELDNAMES = [
     "id", "programa", "categoria", "dificuldade", "tipo_resposta", "pergunta",
@@ -123,7 +142,7 @@ def call_chat_stream(client: httpx.Client, base_url: str, question: str) -> tupl
     event_type: str | None = None
     data_lines: list[str] = []
 
-    _rate_limit_gemini()
+    _rate_limit_chat_stream()
     with client.stream(
         "POST", f"{base_url}/chat/stream", json={"message": question}, timeout=180.0
     ) as resp:

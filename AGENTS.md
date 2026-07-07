@@ -49,13 +49,10 @@ npm run dev      # servidor de desenvolvimento
 npm run build    # build de produção (tsc + vite build)
 ```
 
-### Docker (produção com GPU)
+### Docker (modo cloud/AWS)
+Esta branch roda apenas em modo cloud/AWS — sem Ollama, sem GPU. `docker-compose.yml` e `docker-compose.gpu.yml` foram removidos.
 ```bash
-# Subir toda a stack com suporte a GPU
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-
-# Apenas CPU
-docker compose up -d
+docker compose -f docker-compose.aws.yml up -d
 ```
 
 ---
@@ -120,7 +117,7 @@ antes de importar qualquer módulo da app.
 | `QDRANT_API_KEY`            | Chave de API do Qdrant                  |
 | `OLLAMA_BASE_URL`           | URL base do Ollama                      |
 | `SECRET_KEY`                | Segredo JWT (≥ 32 chars)                |
-| `POSTGRES_USER/PASSWORD/DB` | Usadas pelo `docker-compose.yml`        |
+| `POSTGRES_USER/PASSWORD/DB` | Usadas pelo `docker-compose.aws.yml`    |
 | `PROPESQI_APP_PASSWORD`     | Senha da role de aplicação PostgreSQL   |
 
 Gere `SECRET_KEY` com:

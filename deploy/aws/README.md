@@ -5,9 +5,9 @@ Compose, usando o Gemini como único provedor de LLM/embeddings — sem Ollama,
 sem GPU. O reranker (`BAAI/bge-reranker-v2-m3`) e o encoder esparso BM42
 continuam rodando localmente, mas em CPU (ver `backend/Dockerfile.cloud`).
 
-Arquitetura: mesma do `docker-compose.yml` original (Postgres + Qdrant +
-backend + frontend em uma rede Docker interna), só que sem o serviço
-`ollama` e sem reserva de GPU — ver `docker-compose.aws.yml` na raiz do repo.
+Arquitetura: Postgres + Qdrant + backend + frontend em uma rede Docker
+interna, sem o serviço `ollama` e sem reserva de GPU — ver
+`docker-compose.aws.yml` na raiz do repo (único compose file nesta branch).
 Optou-se por uma única instância EC2 em vez de ECS/Fargate por ser mais
 simples e barato para o volume de uso institucional; pode ser migrado depois
 se o tráfego crescer.

@@ -36,8 +36,9 @@ npm run build    # production build (tsc + vite build → dist/)
 ```
 
 ### Docker (full stack)
+This branch runs cloud/AWS mode only — no local Ollama, no GPU overlay. `docker-compose.yml` and `docker-compose.gpu.yml` were removed; `docker-compose.aws.yml` is the only compose file.
 ```bash
-docker compose up -d
+docker compose -f docker-compose.aws.yml up -d
 ```
 
 Generate `SECRET_KEY`:

@@ -1,31 +1,8 @@
 # PROPESQI RAG Chatbot
 
-Assistente virtual institucional da Pró-Reitoria de Pesquisa e Inovação (PROPESQI) da Universidade Federal do Piauí (UFPI). Responde dúvidas sobre editais, resoluções e regulamentos de programas de iniciação científica com base em documentos indexados. Suporta três modos de deploy: local (Ollama/gemma3:12b, sem internet, requer GPU), híbrido (LLM externo + embeddings/reranker locais via Ollama) e cloud completo sem GPU nem Ollama (Gemini para LLM e embeddings — ver `deploy/aws/README.md`).
+Assistente virtual institucional da Pró-Reitoria de Pesquisa e Inovação (PROPESQI) da Universidade Federal do Piauí (UFPI). Responde dúvidas sobre editais, resoluções e regulamentos de programas de iniciação científica com base em documentos indexados. Esta branch roda exclusivamente em modo cloud/AWS, sem GPU nem Ollama (Gemini para LLM e embeddings — ver `deploy/aws/README.md`). Os modos local (Ollama/gemma3:12b) e híbrido, com seus respectivos `docker-compose.yml`/`docker-compose.gpu.yml`, não existem nesta branch.
 
 ## Requisitos
-
-O sistema suporta três modos de operação com requisitos diferentes:
-
-### Modo local (Ollama + gemma3:12b)
-
-Totalmente on-premise, sem chamadas a APIs externas. Requer GPU dedicada.
-
-| Componente | Versão mínima |
-|---|---|
-| Docker + Docker Compose | 24+ |
-| NVIDIA Container Toolkit | qualquer |
-| GPU NVIDIA | 16 GB VRAM recomendado |
-| VRAM disponível | ~9 GB (bge-m3 + gemma3:12b Q4_K_M) |
-
-### Modo híbrido (LLM externo, embeddings locais via Ollama)
-
-Usa uma API de LLM externa para geração de respostas, mas mantém `bge-m3` (embeddings) rodando via Ollama. **Não requer GPU** para o LLM, mas o Ollama continua no stack.
-
-| Componente | Requisito |
-|---|---|
-| Docker + Docker Compose | 24+ |
-| GPU NVIDIA | não obrigatória |
-| API key | `GOOGLE_API_KEY`, `OPENAI_API_KEY` ou `ANTHROPIC_API_KEY` |
 
 ### Modo cloud completo (AWS / Gemini, sem Ollama)
 
@@ -55,18 +32,16 @@ cp .env.example .env
 # 3. Gere uma SECRET_KEY segura (≥ 32 caracteres)
 python3 -c "import secrets; print(secrets.token_hex(32))"
 
-# 4. Suba o stack completo (GPU habilitada por padrão)
-docker compose up -d
+# 4. Suba o stack (modo cloud/AWS — sem GPU, sem Ollama)
+docker compose -f docker-compose.aws.yml up -d
 
 # 5. Aguarde todos os serviços ficarem saudáveis (~2 min na primeira vez)
-docker compose ps
+docker compose -f docker-compose.aws.yml ps
 
 # 6. Acesse a interface em http://localhost:3000
 ```
 
-Na primeira execução o Ollama baixa automaticamente os modelos `gemma3:12b` e `bge-m3` (~9 GB). Para usar um LLM externo em vez do gemma3, configure `llm_provider` no painel admin após subir o stack.
-
-Para rodar **sem GPU e sem Ollama** (LLM + embeddings via Gemini, ex.: EC2 na AWS), use `docker-compose.aws.yml` + `.env.aws.example` em vez dos arquivos acima — guia completo em [`deploy/aws/README.md`](deploy/aws/README.md).
+Use `docker-compose.aws.yml` + `.env.aws.example` — guia completo em [`deploy/aws/README.md`](deploy/aws/README.md). `llm_provider` e `embedding_provider` são configuráveis em runtime pelo painel admin, sem reiniciar o serviço.
 
 ## Arquitetura
 
@@ -77,12 +52,12 @@ Usuário → http://localhost:3000
               │ /api/*
          FastAPI :8000 (backend)
               │
-     ┌────────┼────────────┐
-     │        │            │
- PostgreSQL  Qdrant     Ollama *
-  (sessões)  (vetores)  (LLM + embeddings)
+     ┌────────┴────────┐
+     │                 │
+ PostgreSQL          Qdrant
+  (sessões)          (vetores)
 ```
-\* Ausente no modo cloud completo (`docker-compose.aws.yml`) — LLM e embeddings vêm da API do Gemini nesse modo; reranker e BM42 continuam rodando dentro do próprio backend, em CPU.
+LLM e embeddings densos vêm da API do Gemini (sem Ollama nesta branch); reranker e BM42 continuam rodando dentro do próprio backend, em CPU.
 
 **Pipeline RAG** (`backend/app/core/rag_engine.py`):
 
@@ -100,12 +75,12 @@ Query → Normalização → HyDE → Multi-query → Hybrid Search RRF
 | Backend | FastAPI (Python 3.11+) + SQLAlchemy 2.0 async |
 | Banco relacional | PostgreSQL 16 |
 | Banco vetorial | Qdrant (vetores `dense` + `sparse`) |
-| LLM | Ollama → `gemma3:12b` (local) ou Gemini / OpenAI / Anthropic (externo) |
-| Embeddings | Ollama → `bge-m3` (local/híbrido) ou Gemini `gemini-embedding-001` (cloud completo) |
-| Reranker | `BAAI/bge-reranker-v2-m3` (sentence-transformers, CPU em todos os modos) |
+| LLM | Gemini / OpenAI / Anthropic — switchable via `rag_config` em runtime |
+| Embeddings | Gemini `gemini-embedding-001` |
+| Reranker | `BAAI/bge-reranker-v2-m3` (sentence-transformers, CPU) |
 | Encoder esparso | fastembed BM42 |
-| OCR (PDFs escaneados) | LLMWhisperer API (cloud) — requer `LLMWHISPERER_API_KEY` em todos os modos |
-| Infraestrutura | Docker Compose + GPU overlay (local/híbrido) ou CPU-only (`Dockerfile.cloud`, AWS) |
+| OCR (PDFs escaneados) | LLMWhisperer API (cloud) — requer `LLMWHISPERER_API_KEY` |
+| Infraestrutura | Docker Compose, CPU-only (`backend/Dockerfile.cloud`) |
 
 ## Configuração (`.env`)
 
@@ -192,13 +167,13 @@ npm run build    # build de produção (tsc + vite → dist/)
 
 ```bash
 # Backend (Python)
-docker compose build backend && docker compose up -d backend
+docker compose -f docker-compose.aws.yml build backend && docker compose -f docker-compose.aws.yml up -d backend
 
 # Frontend (React)
-docker compose build frontend && docker compose up -d frontend
+docker compose -f docker-compose.aws.yml build frontend && docker compose -f docker-compose.aws.yml up -d frontend
 
 # Ambos
-docker compose build backend frontend && docker compose up -d backend frontend
+docker compose -f docker-compose.aws.yml build backend frontend && docker compose -f docker-compose.aws.yml up -d backend frontend
 ```
 
 ## Estrutura do projeto
@@ -243,8 +218,7 @@ chatbot/
 ├── deploy/aws/
 │   ├── README.md             # guia de deploy em EC2 (instância, security group, TLS)
 │   └── user-data.sh          # cloud-init: instala Docker + Compose plugin
-├── docker-compose.yml         # modo local/híbrido (GPU habilitada por padrão)
-├── docker-compose.aws.yml     # modo cloud completo (sem Ollama, CPU-only)
+├── docker-compose.aws.yml     # único compose file nesta branch (sem Ollama, CPU-only)
 ├── .env.example
 ├── .env.aws.example
 └── CLAUDE.md

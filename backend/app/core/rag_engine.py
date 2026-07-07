@@ -912,8 +912,19 @@ async def rag_stream(
         if rag_cfg.parent_child_expansion_enabled:
             reranked_parents = expand_to_parents(reranked)[:context_top_k]
         else:
+            # Raw Qdrant payloads never carry a "parent_id" key (it's a
+            # chunker-internal field, not copied into payload at indexing
+            # time — see app/ingestion/chunker.py). expand_to_parents()
+            # papers over this with `payload.get("parent_id") or str(point.id)`;
+            # mirror that fallback here so the pinned-injection blocks below
+            # (which all do direct `p["parent_id"]` access) don't KeyError
+            # when parent_child_expansion_enabled is False.
             reranked_parents = [
-                {**(pt.payload or {}), "score": pt.score}
+                {
+                    **(pt.payload or {}),
+                    "parent_id": (pt.payload or {}).get("parent_id") or str(pt.id),
+                    "score": pt.score,
+                }
                 for pt in reranked[:context_top_k]
             ]
 

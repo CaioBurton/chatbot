@@ -1779,6 +1779,166 @@ Isso explica regressões em perguntas que **não foram tocadas** neste passo (Q1
 
 ---
 
+## Passo 20 — Reinício do ciclo de otimização: novo baseline (`embedding_provider=gemini`, corpus estável)
+
+**Data:** 2026-07-07
+**Motivação:** o Passo 19 deixou claro que não existe mais um "full eval final" reaproveitável de ciclos anteriores — o corpus cresce continuamente em produção e o tuning calibrado para `bge-m3` (Passos 1–17) não transferiu 1:1 para `gemini-embedding-001` (Passo 18). Em vez de seguir corrigindo pergunta a pergunta em cima de um baseline desatualizado, este passo reabre o ciclo do zero: todas as técnicas de melhoria desligadas, medidas com o corpus e o embedding provider que estão de fato em uso nesta branch.
+
+**Corpus no momento da medição:** `propesqi_docs` com **3801 pontos** (confirmado via API do Qdrant antes de rodar a eval — mesmo tamanho em que o Passo 19 terminou, ou seja, estável desde então).
+
+**Config aplicada:**
+
+| Parâmetro | Valor |
+|---|---|
+| `hyde_enabled` | false |
+| `multiquery_enabled` | false |
+| `reranker_enabled` | false |
+| `parent_child_expansion_enabled` | false |
+| `contextual_compression_enabled` | false |
+| `search_top_k` | 20 |
+| `reranker_top_k` | 5 |
+| `reranker_score_threshold` | 0.5 |
+| `context_top_k` | 5 |
+| `llm_provider` / `llm_model` | gemini / `gemini-3.1-flash-lite` |
+| `embedding_provider` / `embedding_model` | gemini / `gemini-embedding-001` |
+
+### Bug crítico encontrado: `KeyError: 'parent_id'` com `parent_child_expansion_enabled=false`
+
+A primeira tentativa de rodar esta eval falhou silenciosamente em **todas as 30 perguntas** — cada requisição retornava HTTP 200 com resposta de 0 caracteres, não a mensagem de fallback padrão. Os logs do backend revelaram a causa real:
+
+```
+rag_stream: unhandled error for session ...
+Traceback (most recent call last):
+KeyError: 'parent_id'
+```
+
+**Causa raiz:** o payload bruto de cada ponto no Qdrant nunca carrega uma chave `parent_id` — ela é um campo interno do chunker (`app/ingestion/chunker.py`, gerado como `str(uuid.uuid4())` por chunk pai) que nunca é copiado para o `metadata`/payload persistido (`app/ingestion/processor.py` só espalha `chunk["metadata"]` + `text_preview`). A função `expand_to_parents()` (`app/db/search.py`) mascara essa ausência com um fallback: `payload.get("parent_id") or str(point.id)`. Só que, ao longo dos Passos 10–19, mais de dez blocos de pinned injection foram adicionados em `rag_engine.py` fazendo acesso direto `p["parent_id"]` (sem `.get`), todos assumindo implicitamente que `reranked_parents` sempre passou por `expand_to_parents()`. O branch `else` (usado quando `parent_child_expansion_enabled=False`) monta os dicionários direto do payload bruto — sem essa chave — então **qualquer pergunta que caia em algum bloco de pinned injection quebra o pipeline inteiro** quando a expansão pai-filho está desligada.
+
+Isso nunca havia aparecido porque, em produção, `parent_child_expansion_enabled=true` desde o Passo 1 (2026-06). Só ficou visível agora porque o próprio objetivo deste passo é medir o piso com tudo desligado.
+
+**Fix aplicado** (`app/core/rag_engine.py`, branch `else` da montagem de `reranked_parents`): replicar o mesmo fallback de `expand_to_parents()`:
+
+```python
+"parent_id": (pt.payload or {}).get("parent_id") or str(pt.id),
+```
+
+Confirmado com smoke test dirigido (Q01, Q15, Q19, Q24 — todas tocam algum bloco de pinned injection) antes de rodar a suite completa.
+
+**Recomendação de trabalho futuro:** este é um risco latente em produção — se alguém desligar `parent_child_expansion_enabled` pelo painel admin (por exemplo, para testar performance), o `/chat/stream` quebra silenciosamente para um subconjunto de perguntas. Vale um teste de regressão dedicado (mesmo espírito de `tests/latency/test_chat_concurrency.py`) cobrindo cada combinação de flags com pelo menos uma query que dispare pinned injection.
+
+### Ajuste no harness de avaliação: rate limit do próprio `/chat/stream`
+
+Com todas as técnicas desligadas o pipeline responde em segundos, não ~13s como antes — rápido o bastante para estourar o limite de **5 req/min** que `@limiter.limit("5/minute")` aplica em `/chat/stream` (`app/api/routes/chat.py`, adicionado no commit `a42d10d`). Esse limite sempre existiu, mas nunca havia sido tensionado porque a latência natural do pipeline completo (HyDE + multiquery + reranker) já mantinha o ritmo abaixo de 5/min. `run_groundtruth_eval.py` ganhou um `_rate_limit_chat_stream()` (paceamento mínimo de 12.5 s entre chamadas a `/chat/stream`, espelhando o `_rate_limit_gemini()` já existente) para respeitar esse limite independentemente da velocidade da configuração testada.
+
+### Resultados (full eval, 30/30 perguntas)
+
+| Métrica | Valor |
+|---|---|
+| **Pontuação média** | **4.073 / 5 (81.5%)** |
+| Corretude factual | 0.900 |
+| Completude | 0.805 |
+| Citação de fonte | 0.723 |
+| Sem alucinação | 0.933 |
+| Relevância | 0.897 |
+| Respostas excelentes (≥ 4.5) | 19 / 30 |
+| Respostas ruins (< 2.5) | 3 / 30 |
+| Tempo médio de resposta | 10.68 s (min 2.36 s, max 13.97 s) |
+
+**Por programa:**
+
+| Programa | Média |
+|---|---|
+| **ICV** | **3.66** ← pior |
+| PIBITI / ITV | 3.80 |
+| PIBIC / PIBIC-Af | 3.93 |
+| PIBICEM (PIBIC-EM) | 4.40 |
+| Geral | 4.54 |
+
+**Falhas críticas (≤ 1.0):**
+
+| ID | Nota | Descrição |
+|---|---|---|
+| Q06 | 0.0 | Pontos mínimos do orientador na produção intelectual — fallback, fontes não correspondem ao edital pedido |
+| Q13 | 0.0 | Sanção por não envio do Relatório Final no ICV — fallback apesar de a informação existir no edital vigente |
+| Q18 | 1.0 | Acúmulo de bolsa do PIBITI — resposta incorreta, omite proibição de acúmulo com estágio e obrigação de devolução |
+
+### Comparação com o baseline original (Passo 0, `bge-m3` local)
+
+Esta rodada **não é diretamente comparável** ao "Baseline — todos os flags desabilitados" no topo deste relatório: além do `embedding_provider` diferente (`gemini-embedding-001` vs `bge-m3`), o corpus mudou de tamanho (era menor na época; hoje 3801 pontos, incluindo editais de ciclos que não existiam então). Ainda assim, o contraste é informativo:
+
+| | Baseline original (bge-m3) | **Baseline atual (gemini, Passo 20)** |
+|---|---|---|
+| Pontuação média | 3.63/5 | **4.073/5** |
+| Ruins (< 2.5) | 7/30 | 3/30 |
+| Excelentes (≥ 4.5) | 19/30 | 19/30 |
+
+Coincidência notável: 4.073/5 é o **mesmo valor** que o ciclo anterior só atingiu depois do Passo 9 (injeção lexical seletiva), com todas as técnicas de retrieval reabilitadas. Ou seja, a combinação de embeddings Gemini + corpus maior hoje entrega "de graça", sem nenhuma técnica de melhoria ativa, o que antes exigia ~9 passos de tuning manual sobre `bge-m3`. Isso não invalida o valor das técnicas (HyDE, multiquery, reranker) — apenas desloca o ponto de partida deste novo ciclo bem mais acima do zero.
+
+**Estado da configuração ao final deste passo:** todos os 5 toggles permanecem `false` no banco — próximos passos deste ciclo devem reabilitá-los um de cada vez (mesma metodologia dos Passos 1–10), sempre conferindo `points_count` do Qdrant antes de comparar contra este número.
+
+---
+
+## Passo 21 — `parent_child_expansion_enabled = true`
+
+**Data:** 2026-07-07
+**Motivação:** mesma do Passo 1 do ciclo original — chunks "filhos" (128 tokens) podem cortar a frase com a resposta ao meio; expandir para o chunk "pai" (512 tokens) aumenta o contexto enviado ao LLM. Corpus e demais flags idênticos ao Passo 20 (3801 pontos, `embedding_provider=gemini`), única mudança é esta flag.
+
+**Mudança aplicada:**
+```sql
+UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
+```
+
+### Resultado (full eval, 30/30 perguntas)
+
+| Métrica | Passo 20 (baseline) | **Passo 21** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.073/5 (81.5%) | **4.050/5 (81.0%)** | −0.023 |
+| Corretude factual | 0.900 | 0.920 | +0.020 |
+| Completude | 0.805 | 0.825 | +0.020 |
+| Citação de fonte | 0.723 | 0.713 | −0.010 |
+| Sem alucinação | 0.933 | **0.800** | **−0.133** |
+| Relevância | 0.897 | 0.923 | +0.026 |
+| Excelentes (≥ 4.5) | 19/30 | 15/30 | −4 |
+| Ruins (< 2.5) | 3/30 | 2/30 | −1 |
+| Tempo médio de resposta | 10.68 s | **10.86 s** | +0.18 s |
+
+**Tempo de resposta é essencially neutro** (+0.18 s, dentro do ruído) — `expand_to_parents()` é uma operação local em Python sobre os payloads já retornados pelo Qdrant, sem chamada de rede adicional; a diferença de latência entre os dois passos vem da variação normal do LLM/rede, não da expansão em si.
+
+**Por programa:**
+
+| Programa | Passo 20 | Passo 21 |
+|---|---|---|
+| ICV | 3.66 | 3.58 |
+| PIBITI / ITV | 3.80 | 3.60 |
+| PIBIC / PIBIC-Af | 3.93 | **4.27** |
+| PIBICEM (PIBIC-EM) | 4.40 | 4.20 |
+| Geral | 4.54 | 4.24 |
+
+**Maiores variações por pergunta (|Δ| ≥ 0.5):**
+
+| ID | Passo 20 | Passo 21 | Δ |
+|---|---|---|---|
+| Q06 | 0.0 | **3.5** | **+3.5** ✅ (fallback resolvido — a falha crítica do Passo 20 some) |
+| Q08 | 3.5 | 4.0 | +0.5 |
+| Q09 | 5.0 | 4.5 | −0.5 |
+| Q16 | 4.8 | 4.0 | −0.8 |
+| Q20 | 4.3 | 3.5 | −0.8 |
+| Q25 | 4.5 | 3.5 | −1.0 |
+| Q29 | 4.7 | 3.5 | −1.2 |
+
+**Falhas críticas (≤ 1.0) — inalteradas em relação ao Passo 20, exceto Q06 resolvido:**
+
+| ID | Nota | Descrição |
+|---|---|---|
+| Q13 | 0.0 | Sanção por não envio do Relatório Final no ICV — continua em fallback |
+| Q18 | 1.0 | Acúmulo de bolsa do PIBITI — resposta incorreta, mesma causa do Passo 20 |
+
+**Análise:** o padrão se repete em relação ao Passo 1 do ciclo original — a expansão resolve um caso claro de corte de frase (Q06: 0.0→3.5, mesmo mecanismo do antigo Q13), mas introduz ruído em outras 6 perguntas que já respondiam bem no baseline. A queda mais relevante é na métrica de **alucinação** (0.933→0.800): contexto maior por chunk parece aumentar a chance de o LLM misturar/inferir detalhes de seções adjacentes agora incluídas no mesmo bloco de texto, principalmente nas perguntas que caíram (Q09, Q16, Q20, Q25, Q29 — todas envolvem datas/números específicos que competem com números de seções vizinhas no chunk pai expandido). O resultado líquido é neutro a levemente negativo (−0.023 na média geral, −4 excelentes), mas resolve a única falha crítica nova do Passo 20 que não vinha do ciclo anterior. Consistente com a decisão original do Passo 1: manter ligado (o ganho em Q06 supera o custo, e as próximas técnicas — reranker, HyDE, injeções pinned — historicamente corrigem esse tipo de regressão por competição lexical).
+
+**Estado da configuração ao final deste passo:** `parent_child_expansion_enabled=true`; `hyde`, `multiquery`, `reranker`, `contextual_compression` seguem `false`.
+
+---
+
 ## Resumo da evolução
 
 | Configuração | Média | Ruins (<2.5) | Excelentes (≥4.5) | Full eval? |
@@ -1807,5 +1967,9 @@ Isso explica regressões em perguntas que **não foram tocadas** neste passo (Q1
 | Passo 17: source attribution Q14 (Aditivo nº 2 + SIGAA) | 4.562/5 (91.2%) | 0 | 23 | ✅ (Q14 smoke=5.0 mas full eval=3.5 por não-determinismo LLM; score global inalterado) |
 | Passo 18: migração `embedding_provider=gemini` (stack cloud/AWS) | **3.690/5 (73.8%)** | 6 | 16 | ✅ (queda atribuída à troca bge-m3→gemini-embedding-001; tuning de Passos 1-17 não transferiu; requer nova rodada de calibração) |
 | Passo 19: retuning retrieval p/ Gemini (Q03/Q10/Q15/Q16 corrigidos; Q19/Q24 limitação de geração) | 6 perguntas-alvo: 0.5→**3.2**/5 | — | — | smoke dirigido (full eval não confiável — corpus cresceu 2698→3801 pontos em paralelo, ver seção do Passo 19) |
+| **Passo 20: reinício do ciclo — novo baseline (todos off, `embedding_provider=gemini`, corpus=3801 pts)** | **4.073/5 (81.5%)** | **3** | **19** | ✅ (também corrigiu bug `KeyError: 'parent_id'` latente quando `parent_child_expansion_enabled=false`) |
+| Passo 21: `parent_child_expansion_enabled=true` | 4.050/5 (81.0%) | 2 | 15 | ✅ (Q06 resolvido +3.5; alucinação cai 0.933→0.800; tempo de resposta neutro, +0.18s) |
+
+**Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
 **Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável sem resolver Q26/Q29. O Passo 7 (HyDE enriquecido) foi net negativo (−0.27). O Passo 8 (fine-tuning do cross-encoder) eliminou o viés lexical nos 3 alvos no smoke test mas foi net negativo no full eval (−0.96 vs P5) por dataset desbalanceado. O Passo 9 (injeção lexical seletiva em retrieval + reranker query) resolveu Q26 (+4.0) e Q29 (+4.3) sem regressões globais, estabelecendo novo recorde: **4.073/5 (81.5%)**. O Passo 10 (injeção pinned ICV + vigência bolsas) resolve Q15 (0.0→4.5) e Q05 (0.2→5.0) via contexto forçado, estabelecendo **novo recorde absoluto: 4.503/5 (90.1%)**. Todos os programas acima de 4.35/5; zero respostas ruins. O Passo 11 (reranker GPU + warmup no lifespan) é exclusivamente de latência (cold start 86 s → 23 s) e confirma qualidade preservada: **4.522/5 (90.4%)** — variação dentro do ruído do juiz LLM. O Passo 12 (Q25 injection multi-edital + regra de vigência) introduziu melhorias em Q05/Q06/Q09 e trouxe Q25 para 5.0 em smoke (3.4 no full eval por variabilidade do LLM), mas sofreu regressão dominante em Q21 (4.0→0.0, retrieval instável para PIBICEM colégio): **4.373/5 (87.5%)**; contrafactual sem Q21: 4.506/5. O Passo 13 (Q21 pinned injection PIBICEM colégio) resolve Q21 e Q25 atinge 5.0 no full eval: **4.567/5 (91.3%)** — novo recorde. O Passo 14 (Q18 expansão lexical devolução PIBITI) estabelece novo recorde: **4.620/5 (92.4%)**, 25/30 excelentes. O Passo 15 (feature `edital_ref` + expansão bidirecional) verifica ausência de regressões: **4.60/5 em 25 questões válidas** (5 comprometidas por rate limiting). O Passo 16 (re-indexação de aditivos com `edital_ref` ativo) confirma que a expansão bidirecional é neutra: Q14 e Q30 mantêm os mesmos scores, **4.562/5 (91.2%)** — variação de −0.058 vs P14 dentro do ruído do LLM não-determinístico.
