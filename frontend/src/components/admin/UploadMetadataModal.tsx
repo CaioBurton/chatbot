@@ -13,7 +13,7 @@ const DOC_TYPE_OPTIONS = [
 interface Props {
   fileName: string
   remaining: number
-  onConfirm: (displayName: string, sourceUrl: string, docType: string, editalRef: string) => void
+  onConfirm: (displayName: string, sourceUrl: string, docType: string, editalRef: string, editalCycle: string) => void
   onCancel: () => void
 }
 
@@ -22,10 +22,11 @@ export default function UploadMetadataModal({ fileName, remaining, onConfirm, on
   const [sourceUrl, setSourceUrl] = useState('')
   const [docType, setDocType] = useState('edital')
   const [editalRef, setEditalRef] = useState('')
+  const [editalCycle, setEditalCycle] = useState('')
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
-    onConfirm(displayName.trim(), sourceUrl.trim(), docType, editalRef.trim())
+    onConfirm(displayName.trim(), sourceUrl.trim(), docType, editalRef.trim(), editalCycle.trim())
   }
 
   return (
@@ -70,6 +71,19 @@ export default function UploadMetadataModal({ fileName, remaining, onConfirm, on
                 value={editalRef}
                 onChange={e => setEditalRef(e.target.value)}
                 placeholder="Ex.: Edital PIBIC 2025/2026"
+                className="rounded-lg border border-[#e6e1d5] dark:border-[#33383f] bg-[#fdfcfa] dark:bg-[#16181c] px-3 py-2 text-sm text-[#1e2128] dark:text-[#eceae7] outline-none focus:border-[#2c4a86] dark:focus:border-[#8596b9]"
+              />
+            </label>
+          )}
+
+          {(docType === 'edital' || docType === 'aditivo') && (
+            <label className="flex flex-col gap-1 text-xs text-[#6c7078] dark:text-[#9da2aa]">
+              Ciclo do edital (opcional)
+              <input
+                type="text"
+                value={editalCycle}
+                onChange={e => setEditalCycle(e.target.value)}
+                placeholder="Ex.: 2025/2026"
                 className="rounded-lg border border-[#e6e1d5] dark:border-[#33383f] bg-[#fdfcfa] dark:bg-[#16181c] px-3 py-2 text-sm text-[#1e2128] dark:text-[#eceae7] outline-none focus:border-[#2c4a86] dark:focus:border-[#8596b9]"
               />
             </label>

@@ -42,6 +42,7 @@ async def update_rag_parameters(
     cfg.search_score_threshold = body.search_score_threshold
     cfg.reranker_top_k = body.reranker_top_k
     cfg.reranker_score_threshold = body.reranker_score_threshold
+    cfg.context_top_k = body.context_top_k
     cfg.hyde_enabled = body.hyde_enabled
     cfg.multiquery_enabled = body.multiquery_enabled
     cfg.reranker_enabled = body.reranker_enabled
@@ -51,6 +52,8 @@ async def update_rag_parameters(
     cfg.llm_model = body.llm_model
     cfg.embedding_provider = body.embedding_provider
     cfg.embedding_model = body.embedding_model
+    cfg.child_chunk_overlap_tokens = body.child_chunk_overlap_tokens
+    cfg.active_edital_cycle = body.active_edital_cycle
     cfg.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(cfg)

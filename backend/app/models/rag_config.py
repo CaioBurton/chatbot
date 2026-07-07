@@ -27,6 +27,8 @@ class RagConfig(Base):
     llm_model = Column(String(128), nullable=False, default="gemma3:12b")
     embedding_provider = Column(String(32), nullable=False, default="local")
     embedding_model = Column(String(128), nullable=False, default="bge-m3")
+    child_chunk_overlap_tokens = Column(Integer, nullable=False, default=24)
+    active_edital_cycle = Column(String(16), nullable=True)
     updated_at = Column(
         TIMESTAMP(timezone=True),
         nullable=False,
