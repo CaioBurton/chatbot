@@ -1662,6 +1662,123 @@ Q18 melhorou: a resposta passou a citar explicitamente "item 4.2.1 do Edital PIB
 
 ---
 
+## Passo 18 — Full eval na stack cloud/AWS (`embedding_provider=gemini`)
+
+**Data:** 2026-07-06
+**Branch:** `feature/aws-gemini-deploy`
+**Arquivo:** `groundtruth_chatbot_rag_resultados_passo18.csv`
+
+**Contexto:** todos os passos anteriores (1–17) rodaram com `embedding_provider=local` (`bge-m3` via Ollama). Nesta branch a stack foi migrada para modo cloud/AWS puro — sem Ollama/GPU — e o `rag_config` (id=1) atual usa:
+
+| Parâmetro | Valor |
+|---|---|
+| `embedding_provider` | gemini |
+| `embedding_model` | gemini-embedding-001 |
+| `llm_provider` / `llm_model` | gemini / gemini-3.1-flash-lite (inalterado) |
+| `hyde_enabled` / `multiquery_enabled` / `reranker_enabled` / `contextual_compression_enabled` / `parent_child_expansion_enabled` | todos `true` |
+| `reranker_score_threshold` | 0.5 |
+| Código de `rag_engine.py` | idêntico ao commit do Passo 17 (`c3dcd0d`) + 1 ajuste não commitado (Regra 8 do system prompt: proíbe frases de preenchimento como "de acordo com o documento em minha base de dados...") |
+
+A collection Qdrant (`propesqi_docs`, 2698 pontos) foi verificada como compatível — vetores nomeados `dense` (1024, cosine) **e** `sparse` (IDF) presentes, então a busca híbrida RRF está ativa normalmente; a causa da queda de score abaixo não é infraestrutura de vetores quebrada, e sim o modelo de embedding em si.
+
+Também foi removido o rate-limiting artificial do `run_groundtruth_eval.py` (pacing de ~12 RPM calibrado para o free tier do Gemini) após a conta subir para o Tier 1 de faturamento, que tem headroom de RPM bem maior. O tempo médio de resposta caiu para **13.7 s/pergunta** (min 10.36s, max 22.14s) — antes cada linha levava ≥35s só de pacing artificial.
+
+### Resultados gerais
+
+| Métrica | Passo 17 (bge-m3) | **Passo 18 (gemini-embedding-001)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.562/5 (91.2%) | **3.690/5 (73.8%)** | **−0.872** |
+| Corretude factual | — | 0.807 | — |
+| Completude | — | 0.702 | — |
+| Citação de fonte | — | 0.903 | — |
+| Sem alucinação | — | 0.967 | — |
+| Relevância | — | 0.793 | — |
+| Respostas ruins (< 2.5) | 0/30 | **6/30** | +6 |
+| Respostas excelentes (≥ 4.5) | 23/30 | 16/30 | −7 |
+
+Os números por métrica ficam próximos do **Baseline histórico** (todos os flags desabilitados, bge-m3: 3.63/5, corretude 0.77, completude 0.67, citação 0.84, alucinação 0.93, relevância 0.78) — ou seja, trocar o embedding para Gemini praticamente anula o ganho acumulado de 17 passos de tuning (+0.93 sobre o baseline), mesmo com todos os flags de otimização ainda ligados.
+
+### Diagnóstico — regressão de retrieval, não de geração
+
+As 6 respostas ruins (Q03, Q10, Q15, Q16, Q19, Q24) caíram para o fallback padrão *"Não possuo informações sobre este assunto em minha base de documentos"* — e todas essas perguntas tinham respostas substantivas e corretas no Passo 17:
+
+| ID | Passo 17 (bge-m3) | Passo 18 (gemini) |
+|---|---|---|
+| Q03 | 3.75 | 0.5 (fallback) |
+| Q10 | 5.0 | 1.5 (fallback) |
+| Q15 | 4.5 | 0.0 (fallback) |
+| Q16 | 5.0 | 0.5 (fallback) |
+| Q19 | 3.8 | 0.0 (fallback) |
+| Q24 | 4.5 | 0.5 (fallback) |
+
+Como o fallback só é emitido quando o contexto recuperado não contém a resposta, isso indica que o **retrieval em si** (não a geração) piorou: os pinned injections, expansões lexicais e o `reranker_score_threshold=0.5` foram todos calibrados empiricamente contra o espaço vetorial do `bge-m3` (Passos 1–17); com `gemini-embedding-001` o conjunto de candidatos retornado pela busca dense muda, e vários chunks que antes apareciam no top-k (via busca direta ou via pinned queries que também dependem de embedding) deixam de aparecer — derrubando a citação de fonte e disparando o fallback.
+
+### Conclusão do Passo 18
+
+**A migração para `embedding_provider=gemini` precisa de uma nova rodada de tuning própria.** O pipeline funcional (HyDE, multi-query, reranker, pinned injections, expansões lexicais) está intacto no código, mas os thresholds e as queries pinned foram ajustados para `bge-m3` e não transferem diretamente para o Gemini embedding. Não foi feita nenhuma alteração de código neste passo — apenas execução e registro do eval.
+
+**Próximos passos candidatos:** re-executar smoke tests nas 6 perguntas regressivas variando `reranker_score_threshold`; verificar se as pinned queries (ex.: `_ICV_ADITIVO_RELATORIO_QUERY`) ainda recuperam o chunk certo sob `gemini-embedding-001`; considerar recalibrar ou re-treinar o reranker para o novo espaço vetorial.
+
+---
+
+## Passo 19 — Retuning do retrieval para `gemini-embedding-001`
+
+**Data:** 2026-07-06/07
+**Objetivo:** consertar as 6 perguntas que regrediram no Passo 18 (Q03, Q10, Q15, Q16, Q19, Q24) reajustando pinned injections e expansões lexicais para o espaço vetorial do Gemini, sem reabrir tuning das demais 24 perguntas.
+
+### Diagnóstico por pergunta
+
+Para cada uma das 6 perguntas, o candidato correto (mesmo documento e página corretos) já aparecia no top-20 do `hybrid_search`, mas não sobrevivia ao top-5 do reranker — ou, quando pinned injections já existiam (Q15), o filtro selecionava o chunk errado dentro do documento certo:
+
+| ID | Causa raiz | Evidência |
+|---|---|---|
+| **Q15** | Pinned injection (`_ICV_HABILITACAO_QUERY`) filtrava só por `source contains "ICV"`, sem checar página — o chunk mais bem-rankeado dentro do filtro era a página 2 (critérios de elegibilidade), não a página 4 (cláusula real: "6.1.2.2 ... no mínimo 5 pontos") | Inspeção direta do `parent_text` de cada candidato ICV no pool pinned |
+| **Q03/Q10** | O chunk certo (página 2 do edital PIBIC — contém IRA ≥7,0 **e** a cláusula PIBIC-Af no mesmo parágrafo) nunca entrava no top-5 do rerank; concorria com seções de "orientador"/"cota de bolsas" do mesmo documento | Reranker isolado mostrou o chunk correto em 17º lugar de 20, com score quase empatado (0.7057 vs 0.70–0.726 dos demais) |
+| **Q16** | A seção "2. DOS OBJETIVOS" do PIBITI perdia para páginas de capa/boilerplate (mesma sigla "PIBITI", sem conteúdo relevante) | Top-5 do rerank eram só páginas de capa e cronograma de indicação |
+| **Q19** | A cláusula real (PIBITI 4.1.5.1: "orientar... diretamente nas distintas fases") competia com o item do Anexo I de pontuação ("...como coorientador") — mesma palavra "coorientador", contexto totalmente diferente | Busca literal por "coorientador" no corpus só retornava a tabela de pontuação |
+| **Q24** | Nenhum chunk isolado afirma explicitamente a distinção remunerada/voluntária; o sinal está nos **títulos de seção** ("DO PERÍODO DE VIGÊNCIA DA BOLSA" no PIBIC vs "DA PARTICIPAÇÃO VOLUNTÁRIA" no ICV), não no corpo do texto | Scroll completo do corpus não encontrou a palavra "remunerada" em nenhum chunk do PIBIC |
+
+### Fixes aplicados em `rag_engine.py`
+
+Nenhuma abstração nova — apenas reaproveitando os dois mecanismos já existentes:
+
+1. **Q15:** adicionado filtro `page_number == 4` ao pinned injection existente (linha do `_pinned_icv`).
+2. **Q03/Q10:** nova pinned injection (`_PIBIC_DISCENTE_RE`/`_PIBIC_DISCENTE_QUERY`) filtrando `source contains "PIBIC_e_PIBIC_Af"` + `page_number == 2`. Um único chunk resolve as duas perguntas.
+3. **Q16:** nova expansão lexical (`foco`/`objetivo` + PIBITI → vocabulário da Seção 2).
+4. **Q19:** nova pinned injection (`_PIBITI_COORIENTADOR_RE`/`_PIBITI_ORIENTACAO_QUERY`) filtrando `source contains "PIBITI"` + `doc_type=="edital"` + `page_number == 3`.
+5. **Q24:** nova pinned injection dupla (`_ICV_PIBIC_NATUREZA_RE`), inspirada no padrão multi-edital do Q25 — injeta o chunk "vigência da bolsa" do PIBIC **e** "vigência da participação voluntária" do ICV lado a lado.
+
+Cada query pinned foi validada isoladamente antes de codificar (`hybrid_search` direto confirmando o chunk certo em 1º lugar, com margem clara sobre o 2º) — a mesma disciplina que faltou na primeira tentativa do Q15.
+
+### Resultado do smoke test dirigido (6 perguntas, corpus estável em 2698 pontos)
+
+| ID | Passo 18 | **Passo 19** | Situação |
+|---|---|---|---|
+| Q03 | 0.5 | **4.5** | ✅ corrigido |
+| Q10 | 1.5 | **5.0** | ✅ corrigido |
+| Q15 | 0.0 | **5.0** | ✅ corrigido |
+| Q16 | 0.5 | **4.2** | ✅ corrigido |
+| Q19 | 0.0 | 0.0* | ⚠️ retrieval corrigido, ver limitação abaixo |
+| Q24 | 0.5 | 0.5* | ⚠️ retrieval corrigido, ver limitação abaixo |
+
+**Média das 6 perguntas-alvo: 0.5/5 → 3.2/5.**
+
+\* Em execuções isoladas subsequentes via `/chat/stream`, confirmou-se que os documentos corretos **agora aparecem em `sources`** para Q19 e Q24 — a pinned injection funciona. O LLM, porém, continua respondendo "não possuo informações" porque nenhum chunk afirma a conclusão *literalmente*: o PIBITI nunca escreve "é vedado incluir coorientador" (só descreve o dever de orientar diretamente), e nenhum documento diz explicitamente "PIBIC é remunerado, ICV não é" (o sinal está nos títulos das seções). O system prompt anti-alucinação impede a inferência, corretamente evitando "chutar" uma conclusão não explícita — o mesmo motivo que mantém `alucinação` em ~0.97 durante todo o histórico do projeto. Em uma repetição isolada da suite completa, Q19 pontuou 5.0 (variabilidade de geração do LLM, mesmo padrão documentado para Q14 no Passo 17), reforçando que o gargalo agora é de geração/prompt, não de retrieval.
+
+**Decisão:** não alterar o system prompt para forçar inferência — risco de regredir a métrica de alucinação em outras perguntas está fora do escopo deste passo (que era só retuning de retrieval). Documentado como limitação conhecida.
+
+### Confound descoberto: crescimento do corpus em produção
+
+Durante a validação do full eval (30 perguntas), a contagem de pontos no Qdrant subiu de **2698 para 3801** — o usuário estava populando a base de produção em paralelo (dezenas de resoluções, formulários, aditivos e os editais do ciclo **2026-2027** dos mesmos programas testados pelo groundtruth, que é escrito especificamente sobre o ciclo 2025/2026). Duas rodadas de full eval nesse intervalo deram **4.073/5** e depois **3.74/5** — a segunda rodada pior que a primeira, confirmando que não é ruído, é o corpus mudando sob o teste.
+
+Isso explica regressões em perguntas que **não foram tocadas** neste passo (Q14, Q18, Q04, Q09, Q30): com dois ciclos de edital (2025-2026 e 2026-2027) do mesmo programa agora convivendo na coleção, o retrieval — já com scores mais compactados sob `gemini-embedding-001` (ver Passo 18) — tem mais candidatos quase empatados disputando o top-5, e as pinned injections antigas (que filtram só por `source contains "ICV"`/`"PIBITI"` etc., sem checar o ciclo/ano) passam a poder capturar o documento errado.
+
+**Não é um bug do tuning feito neste passo** — é uma limitação estrutural que só fica visível porque a base cresceu. Como o corpus vai continuar mudando para uso real, **não faz sentido perseguir um número de full eval "final e limpo"** neste momento; o resultado reportado abaixo (smoke test das 6 perguntas-alvo) é o que reflete de forma confiável o efeito do retuning, isolado do ruído de crescimento de base.
+
+**Trabalho futuro recomendado:** adicionar um campo de ciclo/ano (`edital_cycle` ou reaproveitar `edital_ref`) ao payload e usá-lo como filtro (ou boost) no retrieval, para que a coexistência de múltiplos ciclos do mesmo programa não degrade a recuperação — hoje as pinned injections e filtros de fonte (`"PIBIC" in source`, `"ICV" in source`) não distinguem ciclos.
+
+---
+
 ## Resumo da evolução
 
 | Configuração | Média | Ruins (<2.5) | Excelentes (≥4.5) | Full eval? |
@@ -1688,5 +1805,7 @@ Q18 melhorou: a resposta passou a citar explicitamente "item 4.2.1 do Edital PIB
 ¹ 5 questões comprometidas por rate limiting Gemini (duas runs simultâneas). Média calculada nas 25 questões com resposta.  
 ² Excluindo as 5 questões afetadas por rate limit.
 | Passo 17: source attribution Q14 (Aditivo nº 2 + SIGAA) | 4.562/5 (91.2%) | 0 | 23 | ✅ (Q14 smoke=5.0 mas full eval=3.5 por não-determinismo LLM; score global inalterado) |
+| Passo 18: migração `embedding_provider=gemini` (stack cloud/AWS) | **3.690/5 (73.8%)** | 6 | 16 | ✅ (queda atribuída à troca bge-m3→gemini-embedding-001; tuning de Passos 1-17 não transferiu; requer nova rodada de calibração) |
+| Passo 19: retuning retrieval p/ Gemini (Q03/Q10/Q15/Q16 corrigidos; Q19/Q24 limitação de geração) | 6 perguntas-alvo: 0.5→**3.2**/5 | — | — | smoke dirigido (full eval não confiável — corpus cresceu 2698→3801 pontos em paralelo, ver seção do Passo 19) |
 
 **Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável sem resolver Q26/Q29. O Passo 7 (HyDE enriquecido) foi net negativo (−0.27). O Passo 8 (fine-tuning do cross-encoder) eliminou o viés lexical nos 3 alvos no smoke test mas foi net negativo no full eval (−0.96 vs P5) por dataset desbalanceado. O Passo 9 (injeção lexical seletiva em retrieval + reranker query) resolveu Q26 (+4.0) e Q29 (+4.3) sem regressões globais, estabelecendo novo recorde: **4.073/5 (81.5%)**. O Passo 10 (injeção pinned ICV + vigência bolsas) resolve Q15 (0.0→4.5) e Q05 (0.2→5.0) via contexto forçado, estabelecendo **novo recorde absoluto: 4.503/5 (90.1%)**. Todos os programas acima de 4.35/5; zero respostas ruins. O Passo 11 (reranker GPU + warmup no lifespan) é exclusivamente de latência (cold start 86 s → 23 s) e confirma qualidade preservada: **4.522/5 (90.4%)** — variação dentro do ruído do juiz LLM. O Passo 12 (Q25 injection multi-edital + regra de vigência) introduziu melhorias em Q05/Q06/Q09 e trouxe Q25 para 5.0 em smoke (3.4 no full eval por variabilidade do LLM), mas sofreu regressão dominante em Q21 (4.0→0.0, retrieval instável para PIBICEM colégio): **4.373/5 (87.5%)**; contrafactual sem Q21: 4.506/5. O Passo 13 (Q21 pinned injection PIBICEM colégio) resolve Q21 e Q25 atinge 5.0 no full eval: **4.567/5 (91.3%)** — novo recorde. O Passo 14 (Q18 expansão lexical devolução PIBITI) estabelece novo recorde: **4.620/5 (92.4%)**, 25/30 excelentes. O Passo 15 (feature `edital_ref` + expansão bidirecional) verifica ausência de regressões: **4.60/5 em 25 questões válidas** (5 comprometidas por rate limiting). O Passo 16 (re-indexação de aditivos com `edital_ref` ativo) confirma que a expansão bidirecional é neutra: Q14 e Q30 mantêm os mesmos scores, **4.562/5 (91.2%)** — variação de −0.058 vs P14 dentro do ruído do LLM não-determinístico.

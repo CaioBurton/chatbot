@@ -49,22 +49,10 @@ DEFAULT_INPUT = Path(__file__).with_name("groundtruth_chatbot_rag.csv")
 DEFAULT_OUTPUT = Path(__file__).with_name("groundtruth_chatbot_rag_resultados.csv")
 DEFAULT_BASE_URL = "http://localhost:3000/api"
 
-# gemini-3.1-flash-lite free tier: 15 requests/minute. Each row makes two
-# Gemini calls (one inside /chat/stream for the answer, one for the judge),
-# so pace every Gemini-consuming call to stay under the limit.
-_GEMINI_RPM = 15
-# With HyDE + multi-query enabled, each /chat/stream internally fires up to 3
-# Gemini calls (HyDE, reformulations, final generation) plus 1 judge call = 4
-# total per row. When Gemini fails fast (429), requests cycle at the rate of
-# 1 per _MIN_GEMINI_INTERVAL, so the effective RPM = 4/_MIN_GEMINI_INTERVAL*60.
-# Setting CALLS_PER_ROW=5 (with 1-call safety margin) gives 20s minimum
-# interval → 4 calls / 20s = 12 RPM, safely under the 15 RPM limit even when
-# all backend calls fail instantly.
-_GEMINI_CALLS_PER_ROW = 5  # 3 backend (HyDE + multi-query + generation) + 1 judge + 1 margin
-_MIN_GEMINI_INTERVAL = max(
-    (60.0 / _GEMINI_RPM) * _GEMINI_CALLS_PER_ROW,  # RPM budget: 20s
-    35.0,  # hard floor: gemini-3.1-flash-lite retry window is ~30s; 35s gives safe margin
-)
+# Tier 1 billing gives much higher RPM headroom than the free tier, so calls
+# are no longer artificially paced. _request_with_retries() still backs off
+# on transient 429s.
+_MIN_GEMINI_INTERVAL = 0.0
 _last_gemini_call = 0.0
 
 

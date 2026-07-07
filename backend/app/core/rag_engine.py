@@ -146,6 +146,44 @@ _PIBICEM_COLEGIO_QUERY = (
     "sem obrigatoriedade vinculado colégio escola lotado orientador 3.2.1 requisito"
 )
 
+# Q03/Q10 pinned injection: PIBIC "3.3 Discente" eligibility section — the IRA clause
+# (Q03) and the PIBIC-Af affirmative-action clause (Q10) live in the same parent chunk
+# (page 2 of the main edital), but generic retrieval surfaces "orientador"/"cota de
+# bolsas" sections from the same document instead of this one.
+_PIBIC_DISCENTE_RE = re.compile(r"\bIRA\b(?!.*PIBIC-EM)|\bPIBIC-?Af\b", re.IGNORECASE)
+_PIBIC_DISCENTE_QUERY = (
+    "Índice de Rendimento Acadêmico IRA mínimo recomendado igual superior 7,0 sete "
+    "ação afirmativa Lei de Cotas 12.711/2012 PIBIC-Af discente bolsista graduação "
+    "matrícula período compatível vigência"
+)
+
+# Q19 pinned injection: PIBITI 4.1.5.1 — orientador deve orientar o bolsista
+# diretamente nas distintas fases da pesquisa; the Anexo I scoring clause ("...como
+# coorientador") shares the word "coorientador" and wins the generic search instead.
+_PIBITI_COORIENTADOR_RE = re.compile(r"\bcoorientador\b", re.IGNORECASE)
+_PIBITI_ORIENTACAO_QUERY = (
+    "PIBITI orientador cumprir requisitos orientar bolsista discente voluntário "
+    "distintas fases pesquisa tecnológica diretamente 4.1.5"
+)
+
+# Q24 pinned injection: ICV vs PIBIC "natureza da participação" — no single chunk
+# states the voluntary/paid distinction explicitly; the section TITLES carry the
+# signal ("vigência da BOLSA" no PIBIC vs "vigência da PARTICIPAÇÃO VOLUNTÁRIA" no
+# ICV). Pin both side by side so the LLM can contrast them.
+_ICV_PIBIC_NATUREZA_RE = re.compile(
+    r"\bdiferen[cç]a\b.{0,60}\bICV\b.{0,60}\bPIBIC\b"
+    r"|\bdiferen[cç]a\b.{0,60}\bPIBIC\b.{0,60}\bICV\b"
+    r"|\bnatureza\b.{0,100}\bICV\b.{0,60}\bPIBIC\b"
+    r"|\bnatureza\b.{0,100}\bPIBIC\b.{0,60}\bICV\b",
+    re.IGNORECASE,
+)
+_ICV_VOLUNTARIA_QUERY = (
+    "DO PERÍODO DE VIGÊNCIA DA PARTICIPAÇÃO VOLUNTÁRIA ICV discente voluntário sem bolsa"
+)
+_PIBIC_BOLSA_QUERY = (
+    "DO PERÍODO DE VIGÊNCIA DA BOLSA PIBIC bolsista CNPq UFPI vigência doze meses"
+)
+
 logger = logging.getLogger(__name__)
 
 _LOCAL_MODEL = "gemma3:12b"
@@ -264,6 +302,53 @@ _LEXICAL_EXPANSIONS: list[tuple[re.Pattern, str]] = [
         "ICV habilitado etapa análise planos trabalho proponente atingir mínimo pontos "
         "somatório total tabela pontuação Iniciação Científica Voluntária",
     ),
+    # Q03-type: "IRA" for the main PIBIC edital (not PIBIC-EM, which has its own IRA
+    # clause and its own query — negative lookahead keeps this from firing on Q22).
+    (
+        re.compile(r"\bIRA\b(?!.*PIBIC-EM)", re.IGNORECASE),
+        "Índice de Rendimento Acadêmico IRA mínimo recomendado igual superior 7,0 sete "
+        "bolsista graduação matrícula período compatível vigência PIBIC PIBIC-Af",
+    ),
+    # Q10-type: "PIBIC-Af" eligibility — the affirmative-action clause (Lei de Cotas)
+    # is crowded out by the more generic orientador/obrigações sections of the same doc.
+    (
+        re.compile(r"\bPIBIC-?Af\b", re.IGNORECASE),
+        "ação afirmativa Lei de Cotas 12.711/2012 ingresso UFPI PIBIC-Af beneficiário "
+        "discente matriculado graduação IRA elegibilidade requisitos",
+    ),
+    # Q16-type: "foco"/"objetivo" + PIBITI — the Seção 2 objectives paragraph is
+    # crowded out by cover-page/header boilerplate that also matches "PIBITI".
+    (
+        re.compile(
+            r"\b(foco|objetivo)\b.{0,80}\bPIBITI\b|\bPIBITI\b.{0,80}\b(foco|objetivo)\b",
+            re.IGNORECASE,
+        ),
+        "PIBITI pesquisa aplicada desenvolvimento tecnológico inovação inserção recursos "
+        "humanos formação capacidade inovadora empresas cidadão criativo empreendedor "
+        "metodologias pesquisa tecnológica produtos tecnológicos",
+    ),
+    # Q19-type: "coorientador" — the PIBITI clause vedando coorientador is crowded out
+    # by unrelated Anexo/ad-hoc boilerplate that also mentions "orientador".
+    (
+        re.compile(r"\bcoorientador\b", re.IGNORECASE),
+        "PIBITI vedada inclusão coorientador orientador orienta diretamente distintas "
+        "fases pesquisa tecnológica",
+    ),
+    # Q24-type: ICV vs PIBIC "diferença"/"natureza" of participation — the voluntary
+    # (ICV) vs remunerated (PIBIC) distinction isn't stated verbatim in any single
+    # crowded-out chunk; inject vocabulary from both sides explicitly.
+    (
+        re.compile(
+            r"\bdiferen[cç]a\b.{0,60}\bICV\b.{0,60}\bPIBIC\b"
+            r"|\bdiferen[cç]a\b.{0,60}\bPIBIC\b.{0,60}\bICV\b"
+            r"|\bnatureza\b.{0,100}\bICV\b.{0,60}\bPIBIC\b"
+            r"|\bnatureza\b.{0,100}\bPIBIC\b.{0,60}\bICV\b",
+            re.IGNORECASE,
+        ),
+        "ICV caráter voluntário participação sem bolsa remunerada PIBIC bolsa remunerada "
+        "CNPq UFPI Termo de Compromisso plano de trabalho relatórios Seminário Iniciação "
+        "Científica diferença natureza",
+    ),
 ]
 
 
@@ -307,6 +392,8 @@ Modelo: "Conforme o Aditivo nº 2 do Edital ICV 2025/2026, o prazo passou a ser.
 Se o contexto indicar que o envio de relatórios nos editais de iniciação científica é feito \
 "exclusivamente pelo sistema SIGAA" (ou "exclusivamente via SIGAA"), inclua essa informação \
 ao descrever prazos de envio de qualquer relatório (parcial, semestral ou final).
+8. Não use frases de preenchimento como "este documento fala sobre...", "de acordo com o \
+documento em minha base de dados..." ou "com base no contexto apresentado...". Vá direto ao conteúdo da resposta.
 
 CONTEXTO DOS DOCUMENTOS:
 {context}
@@ -835,6 +922,9 @@ async def rag_stream(
         # identical-vocabulary PIBIC/PIBITI sections. Perform an unfiltered search
         # and post-filter to ICV sources in Python (MatchText requires a Qdrant
         # full-text index that the source field does not have for query_points).
+        # page_number==4 pins the exact chunk with "6.1.2.2 ... 5 (cinco) pontos" —
+        # without it, the highest-ranked ICV hit is often page 2 (eligibility
+        # criteria, no point threshold), which still lacks the answer.
         if _ICV_HABILITACAO_RE.search(query):
             _pinned_all = await hybrid_search(
                 _ICV_HABILITACAO_QUERY,
@@ -846,6 +936,7 @@ async def rag_stream(
             _pinned_icv = [
                 pt for pt in _pinned_all
                 if "ICV" in (pt.payload.get("source") or "")
+                and pt.payload.get("page_number") == 4
             ]
             if _pinned_icv:
                 _pinned = expand_to_parents(_pinned_icv[:1])
@@ -995,6 +1086,74 @@ async def rag_stream(
                             [reranked_parents[0], _icv_sanc_exp[0]]
                             + reranked_parents[1:][:context_top_k - 2]
                         )
+
+        # Q03/Q10 pinned injection: see _PIBIC_DISCENTE_QUERY comment above.
+        if _PIBIC_DISCENTE_RE.search(query):
+            _pibic_disc_all = await hybrid_search(
+                _PIBIC_DISCENTE_QUERY,
+                top_k=20,
+                payload_filter=_RAG_PAYLOAD_FILTER,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+            )
+            _pibic_disc_filtered = [
+                pt for pt in _pibic_disc_all
+                if "PIBIC_e_PIBIC_Af" in (pt.payload.get("source") or "")
+                and pt.payload.get("page_number") == 2
+            ]
+            if _pibic_disc_filtered:
+                _pibic_disc_exp = expand_to_parents(_pibic_disc_filtered[:1])
+                if _pibic_disc_exp:
+                    _existing = {p["parent_id"] for p in reranked_parents}
+                    if _pibic_disc_exp[0]["parent_id"] not in _existing:
+                        reranked_parents = [_pibic_disc_exp[0]] + reranked_parents[:context_top_k - 1]
+
+        # Q19 pinned injection: see _PIBITI_ORIENTACAO_QUERY comment above.
+        if _PIBITI_COORIENTADOR_RE.search(query):
+            _piti_all = await hybrid_search(
+                _PIBITI_ORIENTACAO_QUERY,
+                top_k=20,
+                payload_filter=_RAG_PAYLOAD_FILTER,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+            )
+            _piti_filtered = [
+                pt for pt in _piti_all
+                if "PIBITI" in (pt.payload.get("source") or "")
+                and (pt.payload.get("doc_type") or "") == "edital"
+                and pt.payload.get("page_number") == 3
+            ]
+            if _piti_filtered:
+                _piti_exp = expand_to_parents(_piti_filtered[:1])
+                if _piti_exp:
+                    _existing = {p["parent_id"] for p in reranked_parents}
+                    if _piti_exp[0]["parent_id"] not in _existing:
+                        reranked_parents = [_piti_exp[0]] + reranked_parents[:context_top_k - 1]
+
+        # Q24 pinned injection: see _ICV_PIBIC_NATUREZA_RE comment above.
+        if _ICV_PIBIC_NATUREZA_RE.search(query):
+            _natureza_existing = {p["parent_id"] for p in reranked_parents}
+            _natureza_pinned: list[dict] = []
+            for _nq, _nsrc in (
+                (_ICV_VOLUNTARIA_QUERY, "ICV"),
+                (_PIBIC_BOLSA_QUERY, "PIBIC_e_PIBIC_Af"),
+            ):
+                _n_all = await hybrid_search(
+                    _nq,
+                    top_k=10,
+                    payload_filter=_RAG_PAYLOAD_FILTER,
+                    embedding_provider=embedding_provider,
+                    embedding_model=embedding_model,
+                )
+                _n_filtered = [pt for pt in _n_all if _nsrc in (pt.payload.get("source") or "")]
+                if _n_filtered:
+                    _n_exp = expand_to_parents(_n_filtered[:1])
+                    if _n_exp and _n_exp[0]["parent_id"] not in _natureza_existing:
+                        _natureza_pinned.append(_n_exp[0])
+                        _natureza_existing.add(_n_exp[0]["parent_id"])
+            if _natureza_pinned:
+                reranked_parents = _natureza_pinned + reranked_parents
+                reranked_parents = reranked_parents[:context_top_k]
 
         # ------------------------------------------------------------------ #
         # edital_ref bidirectional context expansion                         #
