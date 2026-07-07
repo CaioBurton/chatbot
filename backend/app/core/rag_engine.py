@@ -271,6 +271,58 @@ def _lexical_injection_queries(query: str) -> list[str]:
     """Return synthetic queries for patterns that suffer from lexical mismatch."""
     return [expansion for pattern, expansion in _LEXICAL_EXPANSIONS if pattern.search(query)]
 
+
+async def _pinned_search(
+    query_text: str,
+    *,
+    top_k: int,
+    payload_filter: Filter,
+    embedding_provider: str,
+    embedding_model: str,
+    source_contains: list[str] | None = None,
+    doc_type: str | None = None,
+    page_number: int | None = None,
+    text_contains: list[str] | None = None,
+    cycle_filter: str | None = None,
+) -> list[dict]:
+    """Shared implementation for the pinned-injection pattern used throughout
+    rag_stream(): search with a hand-tuned query, post-filter the raw Qdrant
+    points in Python (Qdrant's query_points has no full-text index on these
+    payload fields), then expand the surviving points to parent context.
+
+    cycle_filter restricts results to chunks tagged with a matching
+    edital_cycle payload value; chunks with no edital_cycle set (the entire
+    corpus prior to this feature) remain eligible regardless of cycle_filter.
+    """
+    points = await hybrid_search(
+        query_text,
+        top_k=top_k,
+        payload_filter=payload_filter,
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
+    )
+
+    def _matches(pt) -> bool:
+        payload = pt.payload or {}
+        if source_contains and not any(
+            k.lower() in (payload.get("source") or "").lower() for k in source_contains
+        ):
+            return False
+        if doc_type and (payload.get("doc_type") or "") != doc_type:
+            return False
+        if page_number is not None and (payload.get("page_number") or 0) != page_number:
+            return False
+        if text_contains and not all(
+            k.lower() in (payload.get("parent_text") or payload.get("text_preview") or "").lower()
+            for k in text_contains
+        ):
+            return False
+        if cycle_filter and payload.get("edital_cycle") not in (None, cycle_filter):
+            return False
+        return True
+
+    return expand_to_parents([pt for pt in points if _matches(pt)])
+
 # Compression prompt is module-level to avoid per-call re-allocation and to
 # keep the instruction surface auditable in one place.
 _COMPRESS_PROMPT_TEMPLATE = (
@@ -480,6 +532,11 @@ def _build_context(parents: list[dict]) -> str:
         source = source[:200]
         page = p.get("page_number") or 0
         text = p.get("parent_text", "")
+        # Any aditivo reaching the context — via normal reranking or via a
+        # pinned injection — gets the same "ADITIVO: <label>" prefix so
+        # Rule 7 of _SYSTEM_PROMPT triggers, instead of a per-question hack.
+        if aditivo_label and not text.startswith("ADITIVO"):
+            text = f"ADITIVO: {aditivo_label}\n{text}"
         header = f"[{i}] {source}" + (f" (p. {page})" if page else "")
         parts.append(f"{header}\n{text}")
     return "\n\n".join(parts)
@@ -668,6 +725,7 @@ async def rag_stream(
     llm_model: str = getattr(rag_cfg, "llm_model", _LOCAL_MODEL) or _LOCAL_MODEL
     embedding_provider: str = getattr(rag_cfg, "embedding_provider", "local") or "local"
     embedding_model: str = getattr(rag_cfg, "embedding_model", "bge-m3") or "bge-m3"
+    active_cycle: str | None = getattr(rag_cfg, "active_edital_cycle", None) or None
     response_parts: list[str] = []
     reranked_parents: list[dict] = []
     pipeline_start = time.perf_counter()
@@ -825,52 +883,55 @@ async def rag_stream(
         if rag_cfg.parent_child_expansion_enabled:
             reranked_parents = expand_to_parents(reranked)[:context_top_k]
         else:
+            # Mirror expand_to_parents()'s fallback (db/search.py) so every
+            # entry in reranked_parents always has a "parent_id" key — the
+            # Qdrant payload itself never stores parent_id (it's a top-level
+            # chunk field, not part of chunk["metadata"]; see chunker.py),
+            # so omitting this fallback makes every pinned injection below
+            # raise KeyError as soon as one of their regexes matches.
             reranked_parents = [
-                {**(pt.payload or {}), "score": pt.score}
+                {
+                    **(pt.payload or {}),
+                    "parent_id": (pt.payload or {}).get("parent_id") or str(pt.id),
+                    "score": pt.score,
+                }
                 for pt in reranked[:context_top_k]
             ]
 
         # Pinned ICV injection (Q15-type): when the query asks about ICV + pontos
         # mínimos, the habilitação chunk (6.1.2.2) is consistently outranked by
-        # identical-vocabulary PIBIC/PIBITI sections. Perform an unfiltered search
-        # and post-filter to ICV sources in Python (MatchText requires a Qdrant
-        # full-text index that the source field does not have for query_points).
+        # identical-vocabulary PIBIC/PIBITI sections.
         if _ICV_HABILITACAO_RE.search(query):
-            _pinned_all = await hybrid_search(
+            _pinned = await _pinned_search(
                 _ICV_HABILITACAO_QUERY,
                 top_k=20,
                 payload_filter=_RAG_PAYLOAD_FILTER,
                 embedding_provider=embedding_provider,
                 embedding_model=embedding_model,
+                source_contains=["icv"],
+                cycle_filter=active_cycle,
             )
-            _pinned_icv = [
-                pt for pt in _pinned_all
-                if "ICV" in (pt.payload.get("source") or "")
-            ]
-            if _pinned_icv:
-                _pinned = expand_to_parents(_pinned_icv[:1])
-                if _pinned:
-                    _existing = {p["parent_id"] for p in reranked_parents}
-                    if _pinned[0]["parent_id"] not in _existing:
-                        reranked_parents = [_pinned[0]] + reranked_parents[:context_top_k - 1]
+            if _pinned:
+                _existing = {p["parent_id"] for p in reranked_parents}
+                if _pinned[0]["parent_id"] not in _existing:
+                    reranked_parents = [_pinned[0]] + reranked_parents[:context_top_k - 1]
 
         # Q05 pinned injection: "vigência das bolsas" queries retrieve the dedicated
         # "DO PERÍODO DE VIGÊNCIA DA BOLSA" section. Without pinning, the cronograma
         # section floods context with many date ranges and confuses the LLM.
         if _VIGENCIA_BOLSA_RE.search(query):
-            _pinned_vig_all = await hybrid_search(
+            _pinned_vig = await _pinned_search(
                 _VIGENCIA_BOLSA_QUERY,
                 top_k=10,
                 payload_filter=_RAG_PAYLOAD_FILTER,
                 embedding_provider=embedding_provider,
                 embedding_model=embedding_model,
+                cycle_filter=active_cycle,
             )
-            if _pinned_vig_all:
-                _pinned_vig = expand_to_parents(_pinned_vig_all[:1])
-                if _pinned_vig:
-                    _existing = {p["parent_id"] for p in reranked_parents}
-                    if _pinned_vig[0]["parent_id"] not in _existing:
-                        reranked_parents = [_pinned_vig[0]] + reranked_parents[:context_top_k - 1]
+            if _pinned_vig:
+                _existing = {p["parent_id"] for p in reranked_parents}
+                if _pinned_vig[0]["parent_id"] not in _existing:
+                    reranked_parents = [_pinned_vig[0]] + reranked_parents[:context_top_k - 1]
 
         # Q25 pinned injection: when query asks about vigência of all programs,
         # force one vigência chunk per non-PIBIC edital into context so the LLM
@@ -879,22 +940,18 @@ async def rag_stream(
             _existing = {p["parent_id"] for p in reranked_parents}
             _multi_pinned: list[dict] = []
             for _vq, _source_keys in _VIGENCIA_MULTI_EDITAL:
-                _vq_all = await hybrid_search(
+                _vq_expanded = await _pinned_search(
                     _vq,
                     top_k=10,
                     payload_filter=_RAG_PAYLOAD_FILTER,
                     embedding_provider=embedding_provider,
                     embedding_model=embedding_model,
+                    source_contains=_source_keys,
+                    cycle_filter=active_cycle,
                 )
-                _vq_filtered = [
-                    pt for pt in _vq_all
-                    if any(k in (pt.payload.get("source") or "").lower() for k in _source_keys)
-                ]
-                if _vq_filtered:
-                    _vq_expanded = expand_to_parents(_vq_filtered[:1])
-                    if _vq_expanded and _vq_expanded[0]["parent_id"] not in _existing:
-                        _multi_pinned.append(_vq_expanded[0])
-                        _existing.add(_vq_expanded[0]["parent_id"])
+                if _vq_expanded and _vq_expanded[0]["parent_id"] not in _existing:
+                    _multi_pinned.append(_vq_expanded[0])
+                    _existing.add(_vq_expanded[0]["parent_id"])
             if _multi_pinned:
                 reranked_parents = _multi_pinned + reranked_parents
                 reranked_parents = reranked_parents[:context_top_k]
@@ -903,67 +960,49 @@ async def rag_stream(
         # The seção 3.2.1 clause uses "lotado"/"obrigatoriedade"/"vinculado" —
         # terms absent from the query — so the chunk falls below reranker threshold.
         if _PIBICEM_COLEGIO_RE.search(query):
-            _pc_all = await hybrid_search(
+            _pc_expanded = await _pinned_search(
                 _PIBICEM_COLEGIO_QUERY,
                 top_k=20,
                 payload_filter=_RAG_PAYLOAD_FILTER,
                 embedding_provider=embedding_provider,
                 embedding_model=embedding_model,
+                source_contains=["pibicem", "pibic-em"],
+                cycle_filter=active_cycle,
             )
-            _pc_filtered = [
-                pt for pt in _pc_all
-                if any(k in (pt.payload.get("source") or "").lower() for k in ["pibicem", "pibic-em"])
-            ]
-            if _pc_filtered:
-                _pc_expanded = expand_to_parents(_pc_filtered[:1])
-                if _pc_expanded:
-                    _existing = {p["parent_id"] for p in reranked_parents}
-                    if _pc_expanded[0]["parent_id"] not in _existing:
-                        reranked_parents = [_pc_expanded[0]] + reranked_parents[:context_top_k - 1]
+            if _pc_expanded:
+                _existing = {p["parent_id"] for p in reranked_parents}
+                if _pc_expanded[0]["parent_id"] not in _existing:
+                    reranked_parents = [_pc_expanded[0]] + reranked_parents[:context_top_k - 1]
 
         # Q14 pinned injection: ICV relatório parcial — pin Aditivo nº 2 ICV chunk to
-        # context position [1] so the LLM attributes the deadline to the correct document.
-        # Filters by doc_type="aditivo" + edital_ref or source containing "icv".
+        # context position [0] so the LLM attributes the deadline to the correct document,
+        # then pin the ICV edital's SIGAA sanções section to position [1].
         if _ICV_RELATORIO_PARCIAL_RE.search(query):
             _aditivo_filter = Filter(
                 must=[FieldCondition(key="doc_type", match=MatchValue(value="aditivo"))],
             )
-            _ad2_all = await hybrid_search(
+            _ad2_expanded = await _pinned_search(
                 _ICV_ADITIVO_RELATORIO_QUERY,
                 top_k=20,
                 payload_filter=_aditivo_filter,
                 embedding_provider=embedding_provider,
                 embedding_model=embedding_model,
-            )
-            _ad2_filtered = [
-                pt for pt in _ad2_all
-                if (
-                    "icv" in (pt.payload.get("edital_ref") or "").lower()
-                    or "icv" in (pt.payload.get("source") or "").lower()
-                )
+                source_contains=["icv"],
                 # Page 2 chunks contain the updated chronogram (SIGAA + 17-31/03/2026).
                 # Page 1 chunks contain "ADITIVO N° 2" text but NOT the new dates.
-                # Filtering to page 2 ensures the LLM sees both the dates and SIGAA
-                # in the parent_text; the "[1] Aditivo nº 2 – ICV 2025/2026" header
-                # (via _format_aditivo_name) triggers Rule 7 for source attribution.
-                and (pt.payload.get("page_number") or 0) == 2
-            ]
-            if _ad2_filtered:
-                _ad2_expanded = expand_to_parents(_ad2_filtered[:1])
-                if _ad2_expanded:
-                    _pid = _ad2_expanded[0]["parent_id"]
-                    # Prepend "ADITIVO: <label>" to the text body so Rule 7 triggers.
-                    # We do this on a copy to avoid mutating the cached parent dict.
-                    _ad2_chunk = dict(_ad2_expanded[0])
-                    _ad2_label = _format_aditivo_name(_ad2_chunk.get("source", ""))
-                    if _ad2_label and not _ad2_chunk.get("parent_text", "").startswith("ADITIVO"):
-                        _ad2_chunk["parent_text"] = f"ADITIVO: {_ad2_label}\n{_ad2_chunk.get('parent_text', '')}"
-                    # Move to position [0] even if already in the list — normal search
-                    # finds the Aditivo 2 chunk but places it mid-list, so the LLM sees
-                    # other documents first and cites them instead of "Aditivo nº 2".
-                    reranked_parents = [_ad2_chunk] + [
-                        p for p in reranked_parents if p["parent_id"] != _pid
-                    ][:context_top_k - 1]
+                page_number=2,
+                cycle_filter=active_cycle,
+            )
+            if _ad2_expanded:
+                _pid = _ad2_expanded[0]["parent_id"]
+                # Move to position [0] even if already in the list — normal search
+                # finds the Aditivo 2 chunk but places it mid-list, so the LLM sees
+                # other documents first and cites them instead of "Aditivo nº 2".
+                # (The "ADITIVO: <label>" text prefix is now applied generically for
+                # every doc_type="aditivo" parent inside _build_context — see Fase D.)
+                reranked_parents = [_ad2_expanded[0]] + [
+                    p for p in reranked_parents if p["parent_id"] != _pid
+                ][:context_top_k - 1]
 
             # Second injection: ICV edital Section 13 establishes "exclusivamente via
             # SIGAA" for relatório submissions. Without it the LLM omits SIGAA because
@@ -972,29 +1011,24 @@ async def rag_stream(
             _icv_edital_filter = Filter(
                 must=[FieldCondition(key="doc_type", match=MatchValue(value="edital"))],
             )
-            _icv_sancoes_all = await hybrid_search(
+            _icv_sanc_exp = await _pinned_search(
                 "exclusivamente sistema SIGAA relatório envio prazo ICV cronograma sanções",
                 top_k=10,
                 payload_filter=_icv_edital_filter,
                 embedding_provider=embedding_provider,
                 embedding_model=embedding_model,
+                source_contains=["icv"],
+                text_contains=["sigaa", "relat"],
+                cycle_filter=active_cycle,
             )
-            _icv_sancoes_filtered = [
-                pt for pt in _icv_sancoes_all
-                if "icv" in (pt.payload.get("source") or "").lower()
-                and "sigaa" in (pt.payload.get("parent_text") or pt.payload.get("text_preview") or "").lower()
-                and "relat" in (pt.payload.get("parent_text") or pt.payload.get("text_preview") or "").lower()
-            ]
-            if _icv_sancoes_filtered:
-                _icv_sanc_exp = expand_to_parents(_icv_sancoes_filtered[:1])
-                if _icv_sanc_exp:
-                    _sanc_pid = _icv_sanc_exp[0]["parent_id"]
-                    _sanc_existing = {p["parent_id"] for p in reranked_parents}
-                    if _sanc_pid not in _sanc_existing and reranked_parents:
-                        reranked_parents = (
-                            [reranked_parents[0], _icv_sanc_exp[0]]
-                            + reranked_parents[1:][:context_top_k - 2]
-                        )
+            if _icv_sanc_exp:
+                _sanc_pid = _icv_sanc_exp[0]["parent_id"]
+                _sanc_existing = {p["parent_id"] for p in reranked_parents}
+                if _sanc_pid not in _sanc_existing and reranked_parents:
+                    reranked_parents = (
+                        [reranked_parents[0], _icv_sanc_exp[0]]
+                        + reranked_parents[1:][:context_top_k - 2]
+                    )
 
         # ------------------------------------------------------------------ #
         # edital_ref bidirectional context expansion                         #

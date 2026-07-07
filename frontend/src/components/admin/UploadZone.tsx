@@ -145,7 +145,7 @@ export default function UploadZone({ onUploaded }: Props) {
   // doesn't flicker when the cursor passes over child elements.
   const dragCounter = useRef(0)
 
-  const uploadFile = (file: File, displayName: string, sourceUrl: string, docType: string, editalRef: string) => {
+  const uploadFile = (file: File, displayName: string, sourceUrl: string, docType: string, editalRef: string, editalCycle: string) => {
     const id = generateUUID()
     const entry: FileEntry = { id, name: file.name, progress: 0, status: 'uploading' }
     setFiles(prev => [...prev, entry])
@@ -194,6 +194,7 @@ export default function UploadZone({ onUploaded }: Props) {
     if (sourceUrl) form.append('source_url', sourceUrl)
     form.append('doc_type', docType)
     if (editalRef) form.append('edital_ref', editalRef)
+    if (editalCycle) form.append('edital_cycle', editalCycle)
     xhr.open('POST', `${API_BASE}/documents/upload`)
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.send(form)
@@ -216,9 +217,9 @@ export default function UploadZone({ onUploaded }: Props) {
     if (accepted.length > 0) setPending(prev => [...prev, ...accepted])
   }
 
-  const handleModalConfirm = (displayName: string, sourceUrl: string, docType: string, editalRef: string) => {
+  const handleModalConfirm = (displayName: string, sourceUrl: string, docType: string, editalRef: string, editalCycle: string) => {
     const [file, ...rest] = pending
-    uploadFile(file, displayName, sourceUrl, docType, editalRef)
+    uploadFile(file, displayName, sourceUrl, docType, editalRef, editalCycle)
     setPending(rest)
   }
 
