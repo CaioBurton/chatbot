@@ -106,6 +106,9 @@ services:
       # Max /chat/stream requests processed at once (optional — defaults to 3;
       # lower on small CPU-only instances to avoid OOM under concurrent load)
       MAX_CONCURRENT_CHAT_REQUESTS: ${MAX_CONCURRENT_CHAT_REQUESTS:-3}
+      # Disables /chat/stream and /chat/sessions rate limiting when false.
+      # Only for controlled eval runs — must stay true in production.
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
     volumes:
       # Persistent storage for uploaded documents — survives container restarts
       - uploads_data:/app/uploads

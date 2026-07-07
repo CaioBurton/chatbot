@@ -130,6 +130,8 @@ All DB interactions must use `AsyncSession` + `asyncpg`. Never mix in synchronou
 ### Rate Limiting
 `app/core/limiter.py` uses slowapi with `X-Real-IP` as the key (set by nginx). The limits are applied in `app/api/routes/chat.py`. Clients behind the same NAT share a single bucket — intended behavior for the institutional use case.
 
+The limiter as a whole can be disabled via `RATE_LIMIT_ENABLED=false` (`Settings`, default `true`) — this is only for a controlled local `run_groundtruth_eval.py` run (pair with `EVAL_CHAT_STREAM_INTERVAL=0` to also skip the harness's own pacing). Always revert to `true` and restart the backend before serving real traffic; never leave it `false` in production.
+
 ### Indexing Progress
 Publish progress events via `app/core/progress.py` (SSE). The frontend consumes them over `/ws`. Do not use `print()` or logging to report indexing progress to the client.
 

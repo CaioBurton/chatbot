@@ -1,6 +1,8 @@
 from slowapi import Limiter
 from starlette.requests import Request
 
+from app.core.config import get_settings
+
 
 def _client_ip(request: Request) -> str:
     # nginx sets X-Real-IP to $remote_addr (the connecting client's IP,
@@ -12,4 +14,4 @@ def _client_ip(request: Request) -> str:
     )
 
 
-limiter = Limiter(key_func=_client_ip)
+limiter = Limiter(key_func=_client_ip, enabled=get_settings().RATE_LIMIT_ENABLED)

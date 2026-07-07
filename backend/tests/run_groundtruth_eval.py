@@ -56,13 +56,16 @@ _MIN_GEMINI_INTERVAL = 0.0
 _last_gemini_call = 0.0
 
 # app/api/routes/chat.py caps POST /chat/stream at 5/minute per client IP
-# (slowapi). With every RAG technique disabled the pipeline can answer in
-# under a second, so firing the 30 groundtruth questions back-to-back trips
-# that cap long before it ever did with HyDE/multiquery/rerank in the loop
-# (~13s/question naturally kept us under it). Pace to slightly over 12s
-# between /chat/stream calls so this harness respects the same limit real
-# clients face, regardless of how fast the configured pipeline happens to be.
-_MIN_CHAT_STREAM_INTERVAL = 12.5
+# (slowapi), unless RATE_LIMIT_ENABLED=false in the backend's .env for a
+# controlled eval run. With every RAG technique disabled the pipeline can
+# answer in under a second, so firing the 30 groundtruth questions
+# back-to-back trips that cap long before it ever did with
+# HyDE/multiquery/rerank in the loop (~13s/question naturally kept us under
+# it). Pace to slightly over 12s between /chat/stream calls by default so
+# this harness respects the same limit real clients face, regardless of how
+# fast the configured pipeline happens to be. Override via
+# EVAL_CHAT_STREAM_INTERVAL=0 once the backend's rate limiter is disabled.
+_MIN_CHAT_STREAM_INTERVAL = float(os.environ.get("EVAL_CHAT_STREAM_INTERVAL", "12.5"))
 _last_chat_stream_call = 0.0
 
 

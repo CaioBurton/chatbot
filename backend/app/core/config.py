@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # enough to OOM-kill the container. Extra requests simply queue.
     MAX_CONCURRENT_CHAT_REQUESTS: int = Field(3, ge=1, le=50)
 
+    # Rate limiting — disable only for controlled test/eval runs; must stay
+    # True in production (see app/core/limiter.py e CLAUDE.md).
+    RATE_LIMIT_ENABLED: bool = True
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     def allowed_origins_list(self) -> list[str]:
