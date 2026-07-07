@@ -5,6 +5,9 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
+_DocType = Literal["edital", "aditivo", "resolucao", "tutorial", "portaria", "relatorio"]
+
+
 class DocumentUploadResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -13,8 +16,9 @@ class DocumentUploadResponse(BaseModel):
     original_name: str
     display_name: str
     source_url: str | None
-    doc_type: str
+    doc_type: _DocType
     edital_ref: str | None = None
+    edital_cycle: str | None = None
 
 
 class DocumentListItem(BaseModel):
@@ -24,8 +28,9 @@ class DocumentListItem(BaseModel):
     original_name: str
     display_name: str
     source_url: str | None
-    doc_type: str
+    doc_type: _DocType
     edital_ref: str | None = None
+    edital_cycle: str | None = None
     status: str
     file_type: str
     total_chunks: int | None
@@ -39,8 +44,9 @@ class DocumentDetail(BaseModel):
     original_name: str
     display_name: str
     source_url: str | None
-    doc_type: str
+    doc_type: _DocType
     edital_ref: str | None = None
+    edital_cycle: str | None = None
     status: str
     file_type: str
     ocr_applied: bool
