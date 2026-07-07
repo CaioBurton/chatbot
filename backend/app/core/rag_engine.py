@@ -408,6 +408,26 @@ async def _pinned_search(
 
     return expand_to_parents([pt for pt in points if _matches(pt)])
 
+
+def _promote_pinned(reranked_parents: list[dict], pinned: dict, context_top_k: int) -> list[dict]:
+    """Force `pinned` into context position [0], deduplicating any existing
+    occurrence of the same parent elsewhere in the list first.
+
+    Earlier versions skipped promotion entirely whenever the pinned parent
+    was already present anywhere in reranked_parents — the assumption being
+    "already there" meant "no work to do". That assumption breaks when the
+    main retrieval surfaces the right chunk but buries it near the bottom of
+    context_top_k: the chunk is technically in the prompt, but the LLM
+    reliably fails to use it from a low position. A change to chunk
+    embeddings (e.g. child-chunk overlap) is enough to shift a pinned target
+    from "absent" to "present but buried", silently regressing a question
+    that used to pass. Always promoting — never just skipping — removes that
+    failure mode for good.
+    """
+    pid = pinned["parent_id"]
+    return [pinned] + [p for p in reranked_parents if p["parent_id"] != pid][: context_top_k - 1]
+
+
 # Compression prompt is module-level to avoid per-call re-allocation and to
 # keep the instruction surface auditable in one place.
 _COMPRESS_PROMPT_TEMPLATE = (
@@ -1004,9 +1024,7 @@ async def rag_stream(
                 cycle_filter=active_cycle,
             )
             if _pinned:
-                _existing = {p["parent_id"] for p in reranked_parents}
-                if _pinned[0]["parent_id"] not in _existing:
-                    reranked_parents = [_pinned[0]] + reranked_parents[:context_top_k - 1]
+                reranked_parents = _promote_pinned(reranked_parents, _pinned[0], context_top_k)
 
         # Q05 pinned injection: "vigência das bolsas" queries retrieve the dedicated
         # "DO PERÍODO DE VIGÊNCIA DA BOLSA" section. Without pinning, the cronograma
@@ -1021,16 +1039,14 @@ async def rag_stream(
                 cycle_filter=active_cycle,
             )
             if _pinned_vig:
-                _existing = {p["parent_id"] for p in reranked_parents}
-                if _pinned_vig[0]["parent_id"] not in _existing:
-                    reranked_parents = [_pinned_vig[0]] + reranked_parents[:context_top_k - 1]
+                reranked_parents = _promote_pinned(reranked_parents, _pinned_vig[0], context_top_k)
 
         # Q25 pinned injection: when query asks about vigência of all programs,
         # force one vigência chunk per non-PIBIC edital into context so the LLM
         # can enumerate all programs with full start/end/duration info.
         if _TODOS_PROGRAMAS_VIGENCIA_RE.search(query):
-            _existing = {p["parent_id"] for p in reranked_parents}
             _multi_pinned: list[dict] = []
+            _multi_pids: set[str] = set()
             for _vq, _source_keys in _VIGENCIA_MULTI_EDITAL:
                 _vq_expanded = await _pinned_search(
                     _vq,
@@ -1041,11 +1057,16 @@ async def rag_stream(
                     source_contains=_source_keys,
                     cycle_filter=active_cycle,
                 )
-                if _vq_expanded and _vq_expanded[0]["parent_id"] not in _existing:
+                if _vq_expanded and _vq_expanded[0]["parent_id"] not in _multi_pids:
                     _multi_pinned.append(_vq_expanded[0])
-                    _existing.add(_vq_expanded[0]["parent_id"])
+                    _multi_pids.add(_vq_expanded[0]["parent_id"])
             if _multi_pinned:
-                reranked_parents = _multi_pinned + reranked_parents
+                # Always promote all pins to the front, deduplicated against
+                # the existing list — see _promote_pinned for why "already
+                # present but buried" must not short-circuit promotion.
+                reranked_parents = _multi_pinned + [
+                    p for p in reranked_parents if p["parent_id"] not in _multi_pids
+                ]
                 reranked_parents = reranked_parents[:context_top_k]
 
         # Q21 pinned injection: "mesmo colégio do orientador" for PIBICEM.
@@ -1062,9 +1083,7 @@ async def rag_stream(
                 cycle_filter=active_cycle,
             )
             if _pc_expanded:
-                _existing = {p["parent_id"] for p in reranked_parents}
-                if _pc_expanded[0]["parent_id"] not in _existing:
-                    reranked_parents = [_pc_expanded[0]] + reranked_parents[:context_top_k - 1]
+                reranked_parents = _promote_pinned(reranked_parents, _pc_expanded[0], context_top_k)
 
         # Q14 pinned injection: ICV relatório parcial — pin Aditivo nº 2 ICV chunk to
         # context position [0] so the LLM attributes the deadline to the correct document,
@@ -1086,15 +1105,9 @@ async def rag_stream(
                 cycle_filter=active_cycle,
             )
             if _ad2_expanded:
-                _pid = _ad2_expanded[0]["parent_id"]
-                # Move to position [0] even if already in the list — normal search
-                # finds the Aditivo 2 chunk but places it mid-list, so the LLM sees
-                # other documents first and cites them instead of "Aditivo nº 2".
                 # (The "ADITIVO: <label>" text prefix is now applied generically for
                 # every doc_type="aditivo" parent inside _build_context — see Fase D.)
-                reranked_parents = [_ad2_expanded[0]] + [
-                    p for p in reranked_parents if p["parent_id"] != _pid
-                ][:context_top_k - 1]
+                reranked_parents = _promote_pinned(reranked_parents, _ad2_expanded[0], context_top_k)
 
             # Second injection: ICV edital Section 13 establishes "exclusivamente via
             # SIGAA" for relatório submissions. Without it the LLM omits SIGAA because
@@ -1113,14 +1126,14 @@ async def rag_stream(
                 text_contains=["sigaa", "relat"],
                 cycle_filter=active_cycle,
             )
-            if _icv_sanc_exp:
+            if _icv_sanc_exp and reranked_parents:
+                # Always promote to position [1] (position [0] is the aditivo
+                # pin above), deduplicated — same reasoning as _promote_pinned.
                 _sanc_pid = _icv_sanc_exp[0]["parent_id"]
-                _sanc_existing = {p["parent_id"] for p in reranked_parents}
-                if _sanc_pid not in _sanc_existing and reranked_parents:
-                    reranked_parents = (
-                        [reranked_parents[0], _icv_sanc_exp[0]]
-                        + reranked_parents[1:][:context_top_k - 2]
-                    )
+                _rest = [p for p in reranked_parents[1:] if p["parent_id"] != _sanc_pid]
+                reranked_parents = (
+                    [reranked_parents[0], _icv_sanc_exp[0]] + _rest[:context_top_k - 2]
+                )
 
         # Q03/Q10 pinned injection: see _PIBIC_DISCENTE_QUERY comment above.
         if _PIBIC_DISCENTE_RE.search(query):
@@ -1135,9 +1148,7 @@ async def rag_stream(
                 cycle_filter=active_cycle,
             )
             if _pibic_disc_exp:
-                _existing = {p["parent_id"] for p in reranked_parents}
-                if _pibic_disc_exp[0]["parent_id"] not in _existing:
-                    reranked_parents = [_pibic_disc_exp[0]] + reranked_parents[:context_top_k - 1]
+                reranked_parents = _promote_pinned(reranked_parents, _pibic_disc_exp[0], context_top_k)
 
         # Q19 pinned injection: see _PIBITI_ORIENTACAO_QUERY comment above.
         if _PIBITI_COORIENTADOR_RE.search(query):
@@ -1150,17 +1161,20 @@ async def rag_stream(
                 source_contains=["PIBITI"],
                 doc_type="edital",
                 page_number=3,
+                # page 3 has multiple parent blocks sharing the same generic
+                # "4.1.x deveres do orientador" boilerplate; without requiring
+                # the literal word, the highest-RRF-score block is often the
+                # wrong one (see Q19 regression after enabling child overlap).
+                text_contains=["coorientador"],
                 cycle_filter=active_cycle,
             )
             if _piti_exp:
-                _existing = {p["parent_id"] for p in reranked_parents}
-                if _piti_exp[0]["parent_id"] not in _existing:
-                    reranked_parents = [_piti_exp[0]] + reranked_parents[:context_top_k - 1]
+                reranked_parents = _promote_pinned(reranked_parents, _piti_exp[0], context_top_k)
 
         # Q24 pinned injection: see _ICV_PIBIC_NATUREZA_RE comment above.
         if _ICV_PIBIC_NATUREZA_RE.search(query):
-            _natureza_existing = {p["parent_id"] for p in reranked_parents}
             _natureza_pinned: list[dict] = []
+            _natureza_pids: set[str] = set()
             for _nq, _nsrc in (
                 (_ICV_VOLUNTARIA_QUERY, "ICV"),
                 (_PIBIC_BOLSA_QUERY, "PIBIC_e_PIBIC_Af"),
@@ -1174,11 +1188,13 @@ async def rag_stream(
                     source_contains=[_nsrc],
                     cycle_filter=active_cycle,
                 )
-                if _n_exp and _n_exp[0]["parent_id"] not in _natureza_existing:
+                if _n_exp and _n_exp[0]["parent_id"] not in _natureza_pids:
                     _natureza_pinned.append(_n_exp[0])
-                    _natureza_existing.add(_n_exp[0]["parent_id"])
+                    _natureza_pids.add(_n_exp[0]["parent_id"])
             if _natureza_pinned:
-                reranked_parents = _natureza_pinned + reranked_parents
+                reranked_parents = _natureza_pinned + [
+                    p for p in reranked_parents if p["parent_id"] not in _natureza_pids
+                ]
                 reranked_parents = reranked_parents[:context_top_k]
 
         # ------------------------------------------------------------------ #
