@@ -25,6 +25,7 @@ class Document(Base):
     source_url = Column(Text, nullable=True)
     doc_type = Column(Text, nullable=False, server_default="edital")
     edital_ref = Column(Text, nullable=True)
+    edital_cycle = Column(Text, nullable=True)
     file_hash = Column(Text, nullable=False, unique=True)
     file_type = Column(Text, nullable=False)
     ocr_applied = Column(Boolean, nullable=False, default=False, server_default="false")

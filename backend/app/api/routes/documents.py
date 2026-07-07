@@ -3,6 +3,7 @@ import logging
 import re
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Response, UploadFile, status
 from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
@@ -30,6 +31,8 @@ from app.schemas.document import (
 )
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+_DocType = Literal["edital", "aditivo", "resolucao", "tutorial", "portaria", "relatorio"]
 
 _UPLOAD_DIR = Path("/app/uploads")
 _MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
@@ -59,8 +62,9 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     display_name: str | None = Form(None),
     source_url: str | None = Form(None),
-    doc_type: str = Form("edital"),
+    doc_type: _DocType = Form("edital"),
     edital_ref: str | None = Form(None),
+    edital_cycle: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     _user=Depends(require_admin),
 ) -> DocumentUploadResponse:
@@ -128,6 +132,7 @@ async def upload_document(
     resolved_source_url = (source_url or "").strip() or None
 
     resolved_edital_ref = (edital_ref or "").strip() or None
+    resolved_edital_cycle = (edital_cycle or "").strip() or None
 
     doc = Document(
         filename=storage_filename,
@@ -136,6 +141,7 @@ async def upload_document(
         source_url=resolved_source_url,
         doc_type=doc_type,
         edital_ref=resolved_edital_ref,
+        edital_cycle=resolved_edital_cycle,
         file_hash=file_hash,
         file_type="pdf_native",
         ocr_applied=False,
@@ -159,6 +165,7 @@ async def upload_document(
         file.filename or sanitised_name,
         doc.doc_type,
         doc.edital_ref,
+        doc.edital_cycle,
     )
 
     return DocumentUploadResponse(
@@ -169,6 +176,7 @@ async def upload_document(
         source_url=doc.source_url,
         doc_type=doc.doc_type,
         edital_ref=doc.edital_ref,
+        edital_cycle=doc.edital_cycle,
     )
 
 
@@ -300,6 +308,8 @@ async def reindex_all_documents(
                 str(file_path),
                 doc.original_name,
                 doc.doc_type,
+                doc.edital_ref,
+                doc.edital_cycle,
             )
             queued += 1
         else:
@@ -494,6 +504,7 @@ async def reindex_document(
         doc.original_name,
         doc.doc_type,
         doc.edital_ref,
+        doc.edital_cycle,
     )
 
     return DocumentUploadResponse(
@@ -504,6 +515,7 @@ async def reindex_document(
         source_url=doc.source_url,
         doc_type=doc.doc_type,
         edital_ref=doc.edital_ref,
+        edital_cycle=doc.edital_cycle,
     )
 
 

@@ -14,6 +14,7 @@ class RagConfigResponse(BaseModel):
     search_score_threshold: float
     reranker_top_k: int
     reranker_score_threshold: float
+    context_top_k: int
     hyde_enabled: bool
     multiquery_enabled: bool
     reranker_enabled: bool
@@ -23,6 +24,8 @@ class RagConfigResponse(BaseModel):
     llm_model: str
     embedding_provider: Literal["local", "gemini"]
     embedding_model: str
+    child_chunk_overlap_tokens: int
+    active_edital_cycle: str | None = None
     openai_api_key_configured: bool = False
     anthropic_api_key_configured: bool = False
     google_api_key_configured: bool = False
@@ -36,6 +39,7 @@ class RagConfigUpdate(BaseModel):
     search_score_threshold: float = Field(ge=0.0, le=1.0)
     reranker_top_k: int = Field(ge=1, le=100)
     reranker_score_threshold: float = Field(ge=0.0, le=1.0)
+    context_top_k: int = Field(ge=1, le=50)
     hyde_enabled: bool = True
     multiquery_enabled: bool = True
     reranker_enabled: bool = True
@@ -45,6 +49,8 @@ class RagConfigUpdate(BaseModel):
     llm_model: str = Field(default="gemma3:12b", min_length=1, max_length=128)
     embedding_provider: Literal["local", "gemini"] = "local"
     embedding_model: str = Field(default="bge-m3", min_length=1, max_length=128)
+    child_chunk_overlap_tokens: int = Field(ge=0, le=511)
+    active_edital_cycle: str | None = None
 
     @model_validator(mode="after")
     def _cross_field_rules(self) -> "RagConfigUpdate":
@@ -55,5 +61,9 @@ class RagConfigUpdate(BaseModel):
         if self.reranker_top_k > self.search_top_k:
             raise ValueError(
                 "reranker_top_k must be less than or equal to search_top_k"
+            )
+        if self.child_chunk_overlap_tokens >= self.child_chunk_tokens:
+            raise ValueError(
+                "child_chunk_overlap_tokens must be strictly less than child_chunk_tokens"
             )
         return self

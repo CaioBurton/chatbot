@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS documents (
     original_name   TEXT        NOT NULL,                    -- original upload filename
     display_name    TEXT,                                    -- admin-provided name shown in the UI (defaults to original_name)
     source_url      TEXT,                                    -- optional external link to the source document
+    doc_type        TEXT        NOT NULL DEFAULT 'edital'
+                    CHECK (doc_type IN (
+                        'edital', 'aditivo', 'resolucao', 'tutorial', 'portaria', 'relatorio'
+                    )),
+    edital_ref      TEXT,                                    -- for aditivos: display_name of the parent edital
+    edital_cycle    TEXT,                                    -- e.g. "2025/2026"; NULL = cycle not tagged
     file_hash       TEXT        NOT NULL UNIQUE,          -- SHA-256 hex digest for dedup (unique: no duplicate content)
     file_type       TEXT        NOT NULL
                     CHECK (file_type IN (
@@ -57,6 +63,18 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_type TEXT NOT NULL DEFAULT 'e
 
 -- Migration: add edital_ref to existing deployments (idempotent)
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS edital_ref TEXT;
+
+-- Migration: add edital_cycle to existing deployments (idempotent)
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS edital_cycle TEXT;
+
+-- Migration: constrain doc_type to the known set of values (idempotent —
+-- Postgres has no ADD CONSTRAINT IF NOT EXISTS, so catch duplicate_object).
+DO $$ BEGIN
+    ALTER TABLE documents ADD CONSTRAINT documents_doc_type_check
+        CHECK (doc_type IN ('edital', 'aditivo', 'resolucao', 'tutorial', 'portaria', 'relatorio'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
 
 -- =============================================================================
 -- chunks
@@ -201,6 +219,8 @@ CREATE TABLE IF NOT EXISTS rag_config (
     embedding_provider              VARCHAR(32) NOT NULL DEFAULT 'local'
                     CHECK (embedding_provider IN ('local', 'gemini')),
     embedding_model                 VARCHAR(128) NOT NULL DEFAULT 'bge-m3',
+    child_chunk_overlap_tokens      INTEGER     NOT NULL DEFAULT 24,
+    active_edital_cycle            VARCHAR(16),
     updated_at                      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT rag_config_single_row CHECK (id = 1)
 );
@@ -218,13 +238,17 @@ ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS embedding_provider             V
     CONSTRAINT rag_config_embedding_provider_check CHECK (embedding_provider IN ('local', 'gemini'));
 ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS embedding_model                VARCHAR(128) NOT NULL DEFAULT 'bge-m3';
 ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS context_top_k                  INTEGER NOT NULL DEFAULT 5;
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS child_chunk_overlap_tokens     INTEGER NOT NULL DEFAULT 24;
+ALTER TABLE rag_config ADD COLUMN IF NOT EXISTS active_edital_cycle            VARCHAR(16);
 
 INSERT INTO rag_config (id, parent_chunk_tokens, child_chunk_tokens, search_top_k,
                         search_score_threshold, reranker_top_k, reranker_score_threshold,
                         hyde_enabled, multiquery_enabled, reranker_enabled,
                         contextual_compression_enabled, parent_child_expansion_enabled,
-                        llm_provider, llm_model, embedding_provider, embedding_model, updated_at)
-VALUES (1, 512, 128, 20, 0.0, 5, 0.5, TRUE, TRUE, TRUE, TRUE, TRUE, 'gemini', 'gemini-3.1-flash-lite', 'gemini', 'gemini-embedding-001', NOW())
+                        llm_provider, llm_model, embedding_provider, embedding_model,
+                        child_chunk_overlap_tokens, updated_at)
+VALUES (1, 512, 128, 20, 0.0, 5, 0.5, TRUE, TRUE, TRUE, TRUE, TRUE, 'gemini', 'gemini-3.1-flash-lite', 'gemini', 'gemini-embedding-001',
+        24, NOW())
 ON CONFLICT (id) DO NOTHING;
 
 -- =============================================================================

@@ -5,28 +5,44 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-def _split_by_tokens(text: str, max_tokens: int, enc: Any) -> list[str]:
-    """Greedily split text into segments that each fit within max_tokens."""
+def _split_by_tokens(
+    text: str, max_tokens: int, enc: Any, overlap_tokens: int = 0
+) -> list[str]:
+    """Greedily split text into segments that each fit within max_tokens.
+
+    When overlap_tokens > 0, each segment after the first repeats the
+    trailing overlap_tokens worth of words from the previous segment, so a
+    sentence that would otherwise land on a segment boundary is fully
+    present in at least one segment.
+    """
     words = text.split()
     if not words:
         return []
 
+    word_token_counts = [len(enc.encode(w, disallowed_special=())) for w in words]
+    n = len(words)
     segments: list[str] = []
-    current_words: list[str] = []
-    current_count = 0
+    start = 0
 
-    for word in words:
-        word_token_count = len(enc.encode(word, disallowed_special=()))
-        if current_count + word_token_count > max_tokens and current_words:
-            segments.append(" ".join(current_words))
-            current_words = [word]
-            current_count = word_token_count
-        else:
-            current_words.append(word)
-            current_count += word_token_count
+    while start < n:
+        count = 0
+        end = start
+        while end < n and (count + word_token_counts[end] <= max_tokens or end == start):
+            count += word_token_counts[end]
+            end += 1
+        segments.append(" ".join(words[start:end]))
 
-    if current_words:
-        segments.append(" ".join(current_words))
+        if end >= n:
+            break
+
+        # Step back from `end` to build the overlap for the next segment,
+        # but always advance start by at least one word to guarantee progress.
+        back = end
+        back_count = 0
+        while back > start + 1 and back_count < overlap_tokens:
+            back -= 1
+            back_count += word_token_counts[back]
+        start = back
 
     return segments
 
@@ -41,6 +57,8 @@ def _sync_chunk(
     child_tokens: int = 128,
     doc_type: str = "edital",
     edital_ref: str | None = None,
+    child_overlap_tokens: int = 24,
+    edital_cycle: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build hierarchical parent→child chunks from extracted page text.
@@ -62,7 +80,9 @@ def _sync_chunk(
 
         for parent_text in parent_texts:
             parent_id = str(uuid.uuid4())
-            child_texts = _split_by_tokens(parent_text, child_tokens, enc)
+            child_texts = _split_by_tokens(
+                parent_text, child_tokens, enc, overlap_tokens=child_overlap_tokens
+            )
 
             for child_text in child_texts:
                 if not child_text.strip():
@@ -87,6 +107,7 @@ def _sync_chunk(
                             "parent_text": parent_text,
                             "doc_type": doc_type,
                             "edital_ref": edital_ref,
+                            "edital_cycle": edital_cycle,
                         },
                     }
                 )
@@ -104,6 +125,8 @@ async def chunk_pages(
     child_tokens: int = 128,
     doc_type: str = "edital",
     edital_ref: str | None = None,
+    child_overlap_tokens: int = 24,
+    edital_cycle: str | None = None,
 ) -> list[dict[str, Any]]:
     """Async wrapper: runs the CPU-bound chunking in the default thread executor."""
     created_at = datetime.now(timezone.utc).isoformat()
@@ -120,4 +143,6 @@ async def chunk_pages(
         child_tokens,
         doc_type,
         edital_ref,
+        child_overlap_tokens,
+        edital_cycle,
     )

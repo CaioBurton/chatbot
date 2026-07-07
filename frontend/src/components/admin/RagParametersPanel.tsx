@@ -10,6 +10,7 @@ interface RagConfig {
   search_score_threshold: number
   reranker_top_k: number
   reranker_score_threshold: number
+  context_top_k: number
   hyde_enabled: boolean
   multiquery_enabled: boolean
   reranker_enabled: boolean
@@ -19,6 +20,8 @@ interface RagConfig {
   llm_model: string
   embedding_provider: 'local' | 'gemini'
   embedding_model: string
+  child_chunk_overlap_tokens: number
+  active_edital_cycle: string | null
   openai_api_key_configured: boolean
   anthropic_api_key_configured: boolean
   google_api_key_configured: boolean
@@ -44,6 +47,8 @@ const FIELDS: {
   { key: 'search_score_threshold', label: 'Search score threshold', min: 0.0, max: 1.0, step: 0.01 },
   { key: 'reranker_top_k', label: 'Reranker top-k', min: 1, max: 100, step: 1 },
   { key: 'reranker_score_threshold', label: 'Reranker score threshold', min: 0.0, max: 1.0, step: 0.01 },
+  { key: 'context_top_k', label: 'Context top-k', min: 1, max: 50, step: 1 },
+  { key: 'child_chunk_overlap_tokens', label: 'Child chunk overlap tokens', min: 0, max: 511, step: 1 },
 ]
 
 const TOGGLES: { key: keyof RagConfig; label: string; description: string }[] = [
@@ -100,6 +105,7 @@ export default function RagParametersPanel() {
   const [llmModel, setLlmModel] = useState<string>('gemma3:12b')
   const [embeddingProvider, setEmbeddingProvider] = useState<'local' | 'gemini'>('local')
   const [embeddingModel, setEmbeddingModel] = useState<string>('bge-m3')
+  const [activeEditalCycle, setActiveEditalCycle] = useState<string>('')
 
   useEffect(() => {
     authFetch(`${API_BASE}/admin/rag-parameters`)
@@ -123,6 +129,7 @@ export default function RagParametersPanel() {
         setLlmModel(data.llm_model ?? 'gemma3:12b')
         setEmbeddingProvider(data.embedding_provider ?? 'local')
         setEmbeddingModel(data.embedding_model ?? 'bge-m3')
+        setActiveEditalCycle(data.active_edital_cycle ?? '')
       })
       .catch(() => setGlobalError('Falha ao carregar parâmetros.'))
   }, [])
@@ -151,7 +158,7 @@ export default function RagParametersPanel() {
     setSaving(true)
     setSaved(false)
 
-    const body: Record<string, number | boolean | string> = {}
+    const body: Record<string, number | boolean | string | null> = {}
     for (const f of FIELDS) {
       body[f.key] = Number(form[f.key])
     }
@@ -162,6 +169,7 @@ export default function RagParametersPanel() {
     body['llm_model'] = llmModel
     body['embedding_provider'] = embeddingProvider
     body['embedding_model'] = embeddingModel
+    body['active_edital_cycle'] = activeEditalCycle.trim() || null
 
     try {
       const res = await authFetch(`${API_BASE}/admin/rag-parameters`, {
@@ -205,6 +213,7 @@ export default function RagParametersPanel() {
       setLlmModel(updated.llm_model ?? 'gemma3:12b')
       setEmbeddingProvider(updated.embedding_provider ?? 'local')
       setEmbeddingModel(updated.embedding_model ?? 'bge-m3')
+      setActiveEditalCycle(updated.active_edital_cycle ?? '')
       setSaved(true)
     } catch {
       setGlobalError('Falha ao salvar parâmetros.')
@@ -474,6 +483,30 @@ export default function RagParametersPanel() {
               )}
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Ciclo do edital ativo */}
+      <div className="flex flex-col gap-3">
+        <h3 className="text-sm font-semibold text-[#444] dark:text-[#bbb] uppercase tracking-wide">
+          Ciclo do edital
+        </h3>
+        <div className="flex flex-col gap-1">
+          <label htmlFor="rag-active-edital-cycle" className="text-sm font-medium text-[#333] dark:text-[#ccc]">
+            Ciclo ativo (opcional)
+          </label>
+          <input
+            id="rag-active-edital-cycle"
+            type="text"
+            value={activeEditalCycle}
+            onChange={e => { setActiveEditalCycle(e.target.value); setSaved(false) }}
+            placeholder="ex.: 2025/2026 (deixe vazio para não filtrar)"
+            className="max-w-xs rounded-lg border border-[#ccc] dark:border-[#555] bg-white dark:bg-[#2d2d2d] px-3 py-2 text-sm text-[#111] dark:text-[#e8e8e8] focus:outline-none focus:ring-2 focus:ring-[#0078d4]"
+          />
+          <span className="text-xs text-[#777] dark:text-[#999]">
+            Quando definido, as injeções de contexto pinadas do RAG ignoram chunks de outros ciclos.
+            Documentos sem ciclo definido continuam elegíveis.
+          </span>
         </div>
       </div>
 

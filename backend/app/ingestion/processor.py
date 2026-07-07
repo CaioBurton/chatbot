@@ -63,6 +63,7 @@ async def process_document(
     original_name: str,
     doc_type: str = "edital",
     edital_ref: str | None = None,
+    edital_cycle: str | None = None,
 ) -> None:
     """
     Background ingestion pipeline for a single PDF document.
@@ -78,7 +79,7 @@ async def process_document(
     stays in "uploaded" until it's actually its turn to process.
     """
     async with _INGESTION_SEMAPHORE:
-        await _process_document(document_id, file_path, original_name, doc_type, edital_ref)
+        await _process_document(document_id, file_path, original_name, doc_type, edital_ref, edital_cycle)
 
 
 async def _process_document(
@@ -87,6 +88,7 @@ async def _process_document(
     original_name: str,
     doc_type: str = "edital",
     edital_ref: str | None = None,
+    edital_cycle: str | None = None,
 ) -> None:
     doc_uuid = uuid.UUID(document_id)
 
@@ -146,6 +148,8 @@ async def _process_document(
                 child_tokens=rag_cfg.child_chunk_tokens,
                 doc_type=doc_type,
                 edital_ref=edital_ref,
+                child_overlap_tokens=rag_cfg.child_chunk_overlap_tokens,
+                edital_cycle=edital_cycle,
             )
 
             if not chunks:
