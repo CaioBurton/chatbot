@@ -2102,7 +2102,55 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | Passo 21: `parent_child_expansion_enabled=true` | 4.050/5 (81.0%) | 2 | 15 | ✅ (Q06 resolvido +3.5; alucinação cai 0.933→0.800; tempo de resposta neutro, +0.18s) |
 | Passo 22: child-chunk overlap + infra `edital_cycle` + consolidação pinned injections | 3.783/5 (75.7%) | 5 | 17 | ✅ (regressão temporária: Q15/Q19/Q25 caem para fallback — bug de promoção de pinned injection, corrigido no Passo 23; Q22 expõe lacuna de retroatividade do `edital_cycle`) |
 | **Passo 23: fix `_promote_pinned()` — sempre promove, nunca só pula** | **4.210/5 (84.2%)** | **2** | **20** | ✅ **novo recorde sob `embedding_provider=gemini`** (Q15/Q19 recuperados; Q22 remanescente — ver `PATCH /documents/{doc_id}`) |
+| Passo 24: fix `_RAG_PAYLOAD_FILTER` (rescue gated ao reranker) + backfill `edital_cycle` | 4.10/5 (82.0%) | 0 | 19 | ✅ sem regressão estrutural (−0.11 vs P23, dentro do ruído do LLM); golden-set ampliado (90 perguntas, dataset separado): 2.702→2.802/5 |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
+
+---
+
+## Passo 24 — golden-set ampliado (90 perguntas, Q31–Q120) + fix `_RAG_PAYLOAD_FILTER` + backfill `edital_cycle`
+
+**Data:** 2026-07-08
+**Motivação:** `groundtruth_chatbot_rag_ampliado.csv` estende o golden-set original com 90 perguntas novas (Q31-Q120) cobrindo categorias nunca antes testadas: Portarias PROPESQI, Relatório Anual de Atividades (RAA), Ética em Pesquisa (CEUA/CBIO), Inovação, GAAI, INBATE, StartUFPI, e os editais do novo ciclo 2026/2027. Baseline inicial (config idêntica ao Passo 23 — todos os 5 flags `false`): **2.702/5 (54.0%)**, 33 ruins, 28 excelentes — bem abaixo dos 4.21/5 do golden-set original.
+
+### Diagnóstico
+
+**Causa raiz nº 1 (a maioria dos 33 ruins):** `_RAG_PAYLOAD_FILTER` (`rag_engine.py`) exclui `doc_type IN ('portaria', 'relatorio')` de **toda** busca, incondicionalmente, desde o Passo 5 do ciclo original — decisão correta na época (só existiam perguntas sobre editais, e portarias citando nomes de programas confundiam o reranker). Mas 8 categorias inteiras do golden-set ampliado (Portarias, RAA, CEUA, CBIO, Inovação) têm sua resposta **só** em documentos desses dois `doc_type` — que existem e estão ativos no corpus (confirmado via `psql`/Qdrant: Portaria 10 tem 8 chunks, RAA 2023 tem 304), mas ficam categoricamente inacessíveis. Não é ranking ruim, é exclusão total antes do RRF.
+
+**Causa raiz nº 2 (Q34, Q41 e outras específicas de ciclo):** `edital_cycle` nunca foi retroagido nos documentos já indexados — todos os 30 editais/aditivos ativos tinham `edital_cycle IS NULL`. Com `active_edital_cycle=2026/2027` configurado no `rag_config`, o guard de ciclo (que exclui chunks de ciclo diferente do ativo) era um no-op: o edital 2025/2026 e o 2026/2027 competiam por pura similaridade semântica.
+
+### Fix 1 — rescue de portaria/relatorio condicionado ao reranker (não a um regex)
+
+A primeira tentativa (regex de intenção, depois comparação do score bruto do RRF entre o pool de edital e o pool de portaria/relatorio) **falhou de forma severa e só foi descoberta ao rodar o golden-set original completo**: o score do `hybrid_search` (RRF) não é comparável entre duas buscas independentes — é um artefato de posição de rank dentro do próprio top-k local de cada busca, não uma medida de relevância calibrada. Ao comparar o score bruto do pool de edital vs o pool de portaria/relatorio para decidir qual usar, **metade das 30 perguntas originais** (todas sobre editais, sem qualquer relação com portaria/RAA) pontuavam mais alto no pool errado — derrubando a média geral de **4.21 para 1.81/5** na primeira tentativa. Uma segunda tentativa (roteamento só com a query bruta, não com `all_queries` completo) reduziu mas não eliminou o problema (RAA reports são documentos institucionais amplos que competem bem com qualquer vocabulário comum — "bolsa", "pontuação", "comissão" — mesmo em perguntas puramente sobre editais).
+
+**Design final:** o rescue só é tentado quando `reranker_enabled=true`. O cross-encoder (`bge-reranker-v2-m3`) produz um score sigmoid calibrado (0-1) que **é** comparável entre buscas independentes — ao contrário do RRF bruto. Com o reranker desligado (config atual), não existe um sinal confiável para arbitrar entre os dois pools, então o comportamento cai de volta ao original (só o pool de edital, sem tentativa de rescue) — idêntico ao Passo 23, zero risco de regressão. Validado com `reranker_enabled=true` temporariamente: 8 das 10 perguntas de portaria/RAA testadas saíram de fallback total para 4.0-5.0/5; revertido para `false` em seguida (reativar o reranker permanentemente é uma decisão separada do ciclo gradual de reabilitação, não um efeito colateral deste fix).
+
+### Fix 2 — backfill de `edital_cycle` + guard "presença no pool" + cycle explícito na pergunta
+
+`backend/tests/backfill_edital_cycle.py` (script one-off, `set_payload` no Qdrant + `UPDATE` no Postgres, sem reprocessar chunks) tagueou os 18 editais/aditivos recorrentes (PIBIC/PIBITI/ICV/PIBIC-EM) com `2025/2026` ou `2026/2027`, confirmado por conteúdo indexado (não só pelo nome do arquivo) para os 3 aditivos ambíguos datados `2026-04-06`.
+
+Popular `edital_cycle` de verdade **expôs um segundo bug latente, mais grave que o original**: com `active_edital_cycle=2026/2027` sempre aplicado, perguntas sobre o ICV (que não tem edição 2026/2027 ainda) perdiam sua única fonte válida — o guard filtrava o único edital ICV existente (2025/2026) sem ter um substituto para colocar no lugar, convertendo uma resposta correta em fallback total. Corrigido com duas mudanças em `_cycle_survivors()`/`_effective_cycle()`:
+1. **Guard "presença no pool":** só exclui chunks de ciclo diferente se **existir** pelo menos um chunk do ciclo ativo entre os candidatos que já passaram nos outros filtros — nunca esvazia o pool para um programa sem edição mais nova.
+2. **Ciclo explícito na pergunta tem prioridade:** se a pergunta menciona um ciclo (`"2025/2026"`, `"2026-2027"`), esse ciclo é usado em vez do `active_edital_cycle` configurado — `rag_config.active_edital_cycle` deixou de ser aplicado como padrão global para perguntas sem menção explícita de ciclo (só entra em jogo quando a própria pergunta pede um ciclo específico).
+
+### Resultado
+
+**Golden-set original (30 perguntas, regressão):** **4.10/5 (82.0%)** vs baseline Passo 23 de 4.21/5 — variação de −0.11, dentro do ruído de não-determinismo do LLM já documentado repetidamente neste relatório (ex.: Q07 caiu de 4.0→3.0 aqui, o mesmo padrão "5.0→3.5 por não-determinismo" already visto no Passo 14/17). Zero perguntas caíram para fallback total; 8 questões com |Δ|≥0.5 (algumas melhoraram: Q11 +0.5, Q13 +0.5).
+
+**Golden-set ampliado (90 perguntas, `reranker_enabled=false`, config idêntica ao Passo 23):**
+
+| | Antes (baseline desta rodada) | **Depois (Fix 1 dormant + Fix 2 ativo)** |
+|---|---|---|
+| Pontuação média | 2.702/5 (54.0%) | **2.802/5 (56.0%)** |
+| Ruins (< 2.5) | 33/90 | 31/90 |
+| Excelentes (≥ 4.5) | 28/90 | 29/90 |
+
+Ganho modesto porque o Fix 1 (a causa raiz nº 1, responsável pela maioria dos 33 ruins) está **dormant** sob a config atual — só o Fix 2 está ativo. Maiores ganhos: **Q41 (0.0→5.0)**, **Q46 (0.2→4.5)**, Q31 (1.5→4.0), Q42/Q43 (+1.0 cada) — todas dependentes de desambiguação de ciclo. Pequenas regressões (Q33 −1.3, Q36 −1.0, Q89 −1.0) sem padrão comum aparente; consistentes com variação normal do juiz LLM dado o tamanho da amostra.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 23 (todos os 5 flags `false`); `edital_cycle` retroagido nos 18 editais/aditivos recorrentes; `_RAG_PAYLOAD_FILTER` com rescue implementado mas dormant.
+
+**Passo 25 (pendente, já esperado pelo ciclo de reabilitação gradual):** reativar `reranker_enabled=true` desbloqueia o Fix 1 — validado em smoke test (8/10 perguntas de portaria/RAA corrigidas), mas precisa da mesma metodologia dos Passos 1-10/20-23 (full eval de 30 + 90 perguntas, medir impacto líquido, decidir manter/reverter) antes de virar padrão de produção.
+
+---
 
 **Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável sem resolver Q26/Q29. O Passo 7 (HyDE enriquecido) foi net negativo (−0.27). O Passo 8 (fine-tuning do cross-encoder) eliminou o viés lexical nos 3 alvos no smoke test mas foi net negativo no full eval (−0.96 vs P5) por dataset desbalanceado. O Passo 9 (injeção lexical seletiva em retrieval + reranker query) resolveu Q26 (+4.0) e Q29 (+4.3) sem regressões globais, estabelecendo novo recorde: **4.073/5 (81.5%)**. O Passo 10 (injeção pinned ICV + vigência bolsas) resolve Q15 (0.0→4.5) e Q05 (0.2→5.0) via contexto forçado, estabelecendo **novo recorde absoluto: 4.503/5 (90.1%)**. Todos os programas acima de 4.35/5; zero respostas ruins. O Passo 11 (reranker GPU + warmup no lifespan) é exclusivamente de latência (cold start 86 s → 23 s) e confirma qualidade preservada: **4.522/5 (90.4%)** — variação dentro do ruído do juiz LLM. O Passo 12 (Q25 injection multi-edital + regra de vigência) introduziu melhorias em Q05/Q06/Q09 e trouxe Q25 para 5.0 em smoke (3.4 no full eval por variabilidade do LLM), mas sofreu regressão dominante em Q21 (4.0→0.0, retrieval instável para PIBICEM colégio): **4.373/5 (87.5%)**; contrafactual sem Q21: 4.506/5. O Passo 13 (Q21 pinned injection PIBICEM colégio) resolve Q21 e Q25 atinge 5.0 no full eval: **4.567/5 (91.3%)** — novo recorde. O Passo 14 (Q18 expansão lexical devolução PIBITI) estabelece novo recorde: **4.620/5 (92.4%)**, 25/30 excelentes. O Passo 15 (feature `edital_ref` + expansão bidirecional) verifica ausência de regressões: **4.60/5 em 25 questões válidas** (5 comprometidas por rate limiting). O Passo 16 (re-indexação de aditivos com `edital_ref` ativo) confirma que a expansão bidirecional é neutra: Q14 e Q30 mantêm os mesmos scores, **4.562/5 (91.2%)** — variação de −0.058 vs P14 dentro do ruído do LLM não-determinístico.

@@ -52,6 +52,59 @@ _RAG_PAYLOAD_FILTER = Filter(
     ]
 )
 
+# Inverse of _RAG_PAYLOAD_FILTER — used only as a rescue pass (see the
+# fallback guard in rag_stream) when the primary, edital-scoped search finds
+# nothing at all. Many questions about portarias/relatórios anuais have no
+# lexical signal ("Qual é a função da CBIO?"), so a regex-guarded special
+# case (the pattern used elsewhere in this file) can't reliably catch them —
+# gating on "the primary search returned nothing" instead means the rescue
+# never competes with a successful edital retrieval and can't reintroduce
+# the exact regression _RAG_PAYLOAD_FILTER was added to prevent.
+_PORTARIA_RELATORIO_FILTER = Filter(
+    must=[
+        FieldCondition(
+            key="doc_type",
+            match=MatchAny(any=["portaria", "relatorio"]),
+        )
+    ]
+)
+
+# Matches an explicit cycle mention like "2025/2026" or "2025-2026" in the
+# user's own query.
+_CYCLE_IN_QUERY_RE = re.compile(r"\b(20\d{2})[/-](20\d{2})\b")
+
+
+def _effective_cycle(query: str) -> str | None:
+    """Derive the active cycle strictly from an explicit mention in the
+    question itself (e.g. "...para 2025/2026?").
+
+    Deliberately NOT falling back to rag_config.active_edital_cycle for
+    cycle-agnostic questions: a single global "current cycle" can't be
+    enforced as a blanket default when not every program has been reissued
+    for it yet (e.g. ICV has no 2026/2027 edition) — unconditionally
+    preferring the configured cycle would silently empty the candidate pool
+    for those programs instead of falling back to their only (older) edital.
+    """
+    match = _CYCLE_IN_QUERY_RE.search(query)
+    return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def _cycle_survivors(points: list, cycle: str | None) -> list:
+    """Presence-gated cycle guard: excludes chunks tagged with a DIFFERENT
+    cycle than `cycle`, but only when at least one candidate is actually
+    tagged with `cycle` — a hard, unconditional exclusion would silently wipe
+    out the only available source for a program that hasn't published an
+    edital for the configured cycle yet (e.g. ICV has no 2026/2027 edition:
+    filtering its 2025/2026 chunks whenever active_edital_cycle=2026/2027
+    leaves nothing at all, converting a working answer into a fallback).
+    Chunks with no edital_cycle tag are always eligible, regardless."""
+    if not cycle:
+        return points
+    same_cycle = [pt for pt in points if (pt.payload or {}).get("edital_cycle") == cycle]
+    if not same_cycle:
+        return points
+    return [pt for pt in points if (pt.payload or {}).get("edital_cycle") in (None, cycle)]
+
 # Q15 pinned injection: ICV-only search to bypass reranker competition.
 # MatchText("icv") on the source field tokenises filenames like
 # "3-2025-2026_Edital_ICV.pdf" → includes all ICV editais regardless of year.
@@ -402,11 +455,14 @@ async def _pinned_search(
             for k in text_contains
         ):
             return False
-        if cycle_filter and payload.get("edital_cycle") not in (None, cycle_filter):
-            return False
         return True
 
-    return expand_to_parents([pt for pt in points if _matches(pt)])
+    candidates = [pt for pt in points if _matches(pt)]
+    # Cycle guard applied last, and only among candidates that already match
+    # every other criterion — see _cycle_survivors for why this is
+    # presence-gated rather than an unconditional exclusion.
+    candidates = _cycle_survivors(candidates, cycle_filter)
+    return expand_to_parents(candidates)
 
 
 def _promote_pinned(reranked_parents: list[dict], pinned: dict, context_top_k: int) -> list[dict]:
@@ -426,6 +482,37 @@ def _promote_pinned(reranked_parents: list[dict], pinned: dict, context_top_k: i
     """
     pid = pinned["parent_id"]
     return [pinned] + [p for p in reranked_parents if p["parent_id"] != pid][: context_top_k - 1]
+
+
+async def _union_search(
+    queries: list[str],
+    *,
+    payload_filter: Filter,
+    rag_cfg,
+    embedding_provider: str,
+    embedding_model: str,
+) -> list[ScoredPoint]:
+    """Union+dedup hybrid_search across `queries`, keeping the max RRF score
+    per point id. Extracted so the primary (edital-scoped) search and the
+    portaria/relatorio pool (see rag_stream) share one implementation."""
+    merged_by_id: dict[str, ScoredPoint] = {}
+    for q in queries:
+        if not q:
+            continue
+        pts = await hybrid_search(
+            q,
+            top_k=rag_cfg.search_top_k,
+            score_threshold=rag_cfg.search_score_threshold,
+            payload_filter=payload_filter,
+            embedding_provider=embedding_provider,
+            embedding_model=embedding_model,
+        )
+        for pt in pts:
+            pid = str(pt.id)
+            existing = merged_by_id.get(pid)
+            if existing is None or pt.score > existing.score:
+                merged_by_id[pid] = pt
+    return list(merged_by_id.values())
 
 
 # Compression prompt is module-level to avoid per-call re-allocation and to
@@ -832,7 +919,7 @@ async def rag_stream(
     llm_model: str = getattr(rag_cfg, "llm_model", _LOCAL_MODEL) or _LOCAL_MODEL
     embedding_provider: str = getattr(rag_cfg, "embedding_provider", "local") or "local"
     embedding_model: str = getattr(rag_cfg, "embedding_model", "bge-m3") or "bge-m3"
-    active_cycle: str | None = getattr(rag_cfg, "active_edital_cycle", None) or None
+    active_cycle: str | None = _effective_cycle(query)
     response_parts: list[str] = []
     reranked_parents: list[dict] = []
     pipeline_start = time.perf_counter()
@@ -927,61 +1014,71 @@ async def rag_stream(
         all_queries.extend(extra_queries)
         all_queries.extend(_lexical_injection_queries(query))
 
-        # Union + dedup across all queries (keep highest score per point ID)
-        stage_start = time.perf_counter()
-        merged_by_id: dict[str, ScoredPoint] = {}
-        for q in all_queries:
-            if not q:
-                continue
-            pts = await hybrid_search(
-                q,
-                top_k=rag_cfg.search_top_k,
-                score_threshold=rag_cfg.search_score_threshold,
-                payload_filter=_RAG_PAYLOAD_FILTER,
-                embedding_provider=embedding_provider,
-                embedding_model=embedding_model,
-            )
-            for pt in pts:
-                pid = str(pt.id)
-                existing = merged_by_id.get(pid)
-                if existing is None or pt.score > existing.score:
-                    merged_by_id[pid] = pt
-
-        merged_points = list(merged_by_id.values())
-        if active_cycle:
-            # Same semantics as _pinned_search's cycle_filter: chunks tagged
-            # with a different cycle are excluded, untagged chunks (the
-            # entire corpus prior to this feature, or documents an admin
-            # hasn't cycle-tagged yet) remain eligible. Without this, a
-            # question with no dedicated pinned injection (e.g. Q22 —
-            # PIBIC-EM IRA) has no defense against a newer-cycle edital
-            # outranking the correct one on pure semantic similarity.
-            merged_points = [
-                pt for pt in merged_points
-                if (pt.payload or {}).get("edital_cycle") in (None, active_cycle)
-            ]
-        _log_stage_duration(session_id, "retrieval", stage_start)
-
-        # ------------------------------------------------------------------ #
-        # 4. Reranking                                                        #
-        # ------------------------------------------------------------------ #
         # Augment the reranker query with lexical expansion terms so the
         # cross-encoder scores domain-specific chunks correctly even when the
         # original query uses different vocabulary (e.g. "sistema" vs "SIGAA").
+        # Computed up front since it only depends on `query`, not on retrieval
+        # results — needed by both the primary search and the rescue pass below.
         _lex_expansions = _lexical_injection_queries(query)
         reranker_query = query + (" " + " ".join(_lex_expansions) if _lex_expansions else "")
 
+        # ------------------------------------------------------------------ #
+        # 3b. Retrieval                                                        #
+        # ------------------------------------------------------------------ #
+        # _RAG_PAYLOAD_FILTER protects edital questions from a documented
+        # regression (Passo 5, relatorio_otimizacao_rag.md — portarias naming
+        # programs by name used to outrank the real edital content in the
+        # cross-encoder reranker). But some questions only have an answer in
+        # portaria/relatorio docs, most with no lexical signal to gate a regex
+        # on ("Qual é a função da CBIO?").
         stage_start = time.perf_counter()
+        primary_points = await _union_search(
+            all_queries, payload_filter=_RAG_PAYLOAD_FILTER, rag_cfg=rag_cfg,
+            embedding_provider=embedding_provider, embedding_model=embedding_model,
+        )
+        _log_stage_duration(session_id, "retrieval", stage_start)
+
+        # ------------------------------------------------------------------ #
+        # 4. Reranking (with portaria/relatorio rescue)                       #
+        # ------------------------------------------------------------------ #
+        stage_start = time.perf_counter()
+        primary_points = _cycle_survivors(primary_points, active_cycle)
+
         if rag_cfg.reranker_enabled:
-            reranked = await rerank(
-                reranker_query,
-                merged_points,
-                top_k=rag_cfg.reranker_top_k,
-                score_threshold=rag_cfg.reranker_score_threshold,
+            # Routing between the edital pool and the portaria/relatorio pool
+            # needs a score that's comparable ACROSS two independent search
+            # calls. Raw hybrid_search (RRF) scores are NOT that: they're a
+            # rank-position artifact local to each call's own small top-k
+            # list (empirically verified — many plain edital questions from
+            # the original 30-question golden set score just as high, or
+            # higher, on the portaria/relatorio pool as genuine portaria
+            # questions do, with no threshold separating the two). The
+            # cross-encoder reranker's sigmoid-normalized score IS a
+            # calibrated, comparable relevance estimate for a given
+            # (query, chunk) pair regardless of which pool the chunk came
+            # from — so only attempt the rescue when a real reranker is
+            # available to arbitrate between the two pools.
+            rescue_points = await _union_search(
+                all_queries, payload_filter=_PORTARIA_RELATORIO_FILTER, rag_cfg=rag_cfg,
+                embedding_provider=embedding_provider, embedding_model=embedding_model,
             )
+            rescue_points = _cycle_survivors(rescue_points, active_cycle)
+            primary_reranked, rescue_reranked = await asyncio.gather(
+                rerank(reranker_query, primary_points, top_k=rag_cfg.reranker_top_k, score_threshold=rag_cfg.reranker_score_threshold),
+                rerank(reranker_query, rescue_points, top_k=rag_cfg.reranker_top_k, score_threshold=rag_cfg.reranker_score_threshold),
+            )
+            primary_top = max((p.score for p in primary_reranked), default=0.0)
+            rescue_top = max((p.score for p in rescue_reranked), default=0.0)
+            reranked = rescue_reranked if rescue_top > primary_top else primary_reranked
         else:
-            # Skip reranker: sort by vector search score and take top_k
-            reranked = sorted(merged_points, key=lambda p: p.score, reverse=True)[:rag_cfg.reranker_top_k]
+            # No cross-encoder available to arbitrate — without one, a
+            # rescue attempt has no reliable signal (see above) and risks
+            # exactly the Passo 5 regression _RAG_PAYLOAD_FILTER exists to
+            # prevent. Fall back to the original, safe edital-only behavior;
+            # the rescue activates automatically once the reranker is
+            # reactivated (already the next step in the ongoing gradual
+            # reactivation cycle — relatorio_otimizacao_rag.md).
+            reranked = sorted(primary_points, key=lambda p: p.score, reverse=True)[:rag_cfg.reranker_top_k]
         _log_stage_duration(session_id, "reranking", stage_start)
 
         # ------------------------------------------------------------------ #
