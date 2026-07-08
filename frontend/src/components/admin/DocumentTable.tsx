@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { RefreshCw, Trash2, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
+import { RefreshCw, Trash2, Pencil, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import { authFetch, API_BASE, type DocumentListItem } from '../../lib/api'
+import EditMetadataModal from './EditMetadataModal'
 
 const PAGE_SIZE = 20
 
@@ -52,6 +53,7 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
+  const [editing, setEditing] = useState<DocumentListItem | null>(null)
 
   const load = useCallback(
     (pageIndex: number) => {
@@ -105,6 +107,27 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
         load(page)
       })
       .catch(() => alert('Falha ao reindexar documento.'))
+  }
+
+  const handleUpdateMetadata = (docType: string, editalRef: string, editalCycle: string) => {
+    const doc = editing
+    if (!doc) return
+    authFetch(`${API_BASE}/documents/${encodeURIComponent(doc.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        doc_type: docType,
+        edital_ref: editalRef || null,
+        edital_cycle: editalCycle || null,
+      }),
+    })
+      .then(res => {
+        if (!res.ok) throw new Error('update error')
+        setEditing(null)
+        onChanged()
+        load(page)
+      })
+      .catch(() => alert('Falha ao atualizar classificação do documento.'))
   }
 
   if (error) {
@@ -182,6 +205,16 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
                   </td>
                   <td className="px-3.5 py-2.5">
                     <div className="flex gap-1.5">
+                      {doc.status !== 'processing' && (
+                        <button
+                          type="button"
+                          onClick={() => setEditing(doc)}
+                          className="flex cursor-pointer items-center gap-1 rounded-[7px] border border-[#6c7078] dark:border-[#9da2aa] px-2 py-[3px] text-[11.5px] text-[#6c7078] dark:text-[#9da2aa] transition-colors hover:bg-[#eae6dc] dark:hover:bg-[#2c313a]"
+                        >
+                          <Pencil size={11} />
+                          Editar
+                        </button>
+                      )}
                       {(doc.status === 'error' || doc.status === 'uploaded') && (
                         <button
                           type="button"
@@ -230,6 +263,14 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
           <ChevronRight size={14} />
         </button>
       </div>
+
+      {editing && (
+        <EditMetadataModal
+          doc={editing}
+          onConfirm={handleUpdateMetadata}
+          onCancel={() => setEditing(null)}
+        />
+      )}
     </div>
   )
 }

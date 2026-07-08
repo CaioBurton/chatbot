@@ -15,6 +15,9 @@ export interface DocumentListItem {
   original_name: string
   display_name: string
   source_url: string | null
+  doc_type: string
+  edital_ref: string | null
+  edital_cycle: string | null
   status: string
   file_type: string
   total_chunks: number | null

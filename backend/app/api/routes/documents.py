@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Response, UploadFile, status
 from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from app.models.document import Document
 from app.schemas.document import (
     DocumentDetail,
     DocumentListItem,
+    DocumentMetadataUpdate,
     DocumentStatsResponse,
     DocumentUploadResponse,
     HybridSearchRequest,
@@ -383,6 +384,100 @@ async def get_document(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     return DocumentDetail.model_validate(doc)
+
+
+# ------------------------------------------------------------------ #
+# PATCH /documents/{doc_id}                                            #
+# Purpose : Correct doc_type/edital_ref/edital_cycle on a document     #
+#           that's already indexed (or errored), then re-ingest so    #
+#           the corrected metadata reaches every chunk's Qdrant       #
+#           payload — payload filters, pinned injections and the      #
+#           cycle guard all read it from there, not from Postgres.    #
+# Auth    : require_admin (JWT, role admin or superadmin)             #
+# Status  : 202 Accepted | 404 Not Found | 409 Conflict               #
+# ------------------------------------------------------------------ #
+@router.patch(
+    "/{doc_id}",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=DocumentUploadResponse,
+)
+async def update_document_metadata(
+    doc_id: uuid.UUID,
+    body: DocumentMetadataUpdate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_admin),
+) -> DocumentUploadResponse:
+    # .with_for_update() mirrors /{doc_id}/reindex — avoids two concurrent
+    # requests both passing the status guard and scheduling duplicate
+    # background tasks against the same document.
+    result = await db.execute(
+        select(Document).where(Document.id == doc_id).with_for_update()
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    if doc.status == "processing":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document is currently processing; try again once it finishes.",
+        )
+
+    file_path = _UPLOAD_DIR / doc.filename
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source file no longer exists on disk; upload the document again",
+        )
+
+    doc.doc_type = body.doc_type
+    doc.edital_ref = (body.edital_ref or "").strip() or None
+    doc.edital_cycle = (body.edital_cycle or "").strip() or None
+    doc.status = "uploaded"
+    doc.error_message = None
+    await db.commit()
+
+    # process_document() only ever upserts new chunk points — unlike
+    # reindex-all(scope="all"), it never purges a document's prior points
+    # first. Without this, re-ingesting an already-active document would
+    # leave the OLD (stale doc_type/edital_cycle) chunks behind alongside
+    # the corrected ones instead of replacing them.
+    qdrant = get_qdrant_client()
+    await qdrant.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=FilterSelector(
+            filter=Filter(
+                must=[FieldCondition(key="doc_id", match=MatchValue(value=str(doc_id)))]
+            )
+        ),
+    )
+    await db.execute(
+        text("DELETE FROM chunks WHERE document_id = :doc_id"),
+        {"doc_id": str(doc_id)},
+    )
+    await db.commit()
+
+    background_tasks.add_task(
+        process_document,
+        str(doc.id),
+        str(file_path),
+        doc.original_name,
+        doc.doc_type,
+        doc.edital_ref,
+        doc.edital_cycle,
+    )
+
+    return DocumentUploadResponse(
+        id=doc.id,
+        status=doc.status,
+        original_name=doc.original_name,
+        display_name=doc.display_name,
+        source_url=doc.source_url,
+        doc_type=doc.doc_type,
+        edital_ref=doc.edital_ref,
+        edital_cycle=doc.edital_cycle,
+    )
 
 
 # ------------------------------------------------------------------ #

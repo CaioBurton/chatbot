@@ -948,6 +948,18 @@ async def rag_stream(
                     merged_by_id[pid] = pt
 
         merged_points = list(merged_by_id.values())
+        if active_cycle:
+            # Same semantics as _pinned_search's cycle_filter: chunks tagged
+            # with a different cycle are excluded, untagged chunks (the
+            # entire corpus prior to this feature, or documents an admin
+            # hasn't cycle-tagged yet) remain eligible. Without this, a
+            # question with no dedicated pinned injection (e.g. Q22 —
+            # PIBIC-EM IRA) has no defense against a newer-cycle edital
+            # outranking the correct one on pure semantic similarity.
+            merged_points = [
+                pt for pt in merged_points
+                if (pt.payload or {}).get("edital_cycle") in (None, active_cycle)
+            ]
         _log_stage_duration(session_id, "retrieval", stage_start)
 
         # ------------------------------------------------------------------ #
