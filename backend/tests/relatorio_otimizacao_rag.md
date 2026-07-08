@@ -2105,6 +2105,7 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | Passo 24: fix `_RAG_PAYLOAD_FILTER` (rescue gated ao reranker) + backfill `edital_cycle` | 4.10/5 (82.0%) | 0 | 19 | ✅ sem regressão estrutural (−0.11 vs P23, dentro do ruído do LLM); golden-set ampliado (90 perguntas, dataset separado): 2.702→2.802/5 |
 | Passo 25: `reranker_enabled=true` (desbloqueia o rescue do Passo 24) | 4.068/5 (81.4%) | 3 | 20 | ⚠️ ver análise — net positivo forte no ampliado, leve queda no original (Q01/Q16 falsos positivos de roteamento) |
 | Passo 26: `hyde_enabled=true` (+ reranker) | 3.900/5 (78.0%) | 4 | 16 | ❌ revertido — net neutro no agregado (120 perguntas: +0.06) mas +4s de latência média; repete o veredicto do Passo 7 original (HyDE net-negativo) |
+| Passo 27: `multiquery_enabled=true` (+ reranker) | 4.053/5 (81.1%) | 3 | 18 | ❌ revertido — quase neutro no original (-0.015), ganho pequeno e parcialmente confundido no ampliado; latência ainda pior que o HyDE (21.14s) |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
@@ -2243,6 +2244,41 @@ Excluídas as 4 cópias mais recentes (2026-07-08) via `DELETE /documents/{id}`,
 **Análise:** repete o veredicto já registrado no **Passo 7 do ciclo original** ("HyDE enriquecido foi net negativo, −0.27"). A reformulação hipotética do HyDE parece redistribuir aleatoriamente qual vocabulário o retrieval prioriza — ajuda quando a pergunta original tem um vocabulário pobre para embedding (Q01), atrapalha quando o vocabulário original já era o ideal e o HyDE introduz ruído lexical (Q06, Q09, Q54, Q119). Sem um padrão previsível de quando ajuda vs atrapalha, e sem ganho agregado que justifique o custo de latência.
 
 **Decisão:** revertido — `hyde_enabled=false`.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 25 (`reranker_enabled=true`; demais 4 flags `false`).
+
+---
+
+## Passo 27 — `multiquery_enabled = true` (ciclo de reabilitação gradual)
+
+**Data:** 2026-07-08
+**Motivação:** próximo flag do ciclo, com `reranker_enabled=true` como base (HyDE já revertido no Passo 26).
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 27 (+multiquery)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.068/5 (81.4%) | **4.053/5 (81.1%)** | −0.015 |
+| Ruins (< 2.5) | 3/30 | 3/30 | 0 |
+| Excelentes (≥ 4.5) | 20/30 | 18/30 | −2 |
+| Tempo médio de resposta | 14.74 s | **21.14 s** | +6.40 s |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 27 (+multiquery)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.553/5 (71.1%) | **3.706/5 (74.1%)** | +0.153¹ |
+| Ruins (< 2.5) | 17/90 | 14/90 | −3 |
+| Excelentes (≥ 4.5) | 43/90 | 41/90 | −2 |
+| Tempo médio de resposta | 12.25 s | 17.21 s | +4.96 s |
+
+¹ **Confundido:** Q86 e Q87 aparecem como "+4.0" cada, mas isso reflete o upload da Resolução 345/2022 (feito entre a medição do Passo 25 e esta) — não é efeito do multiquery. Descontando essas 2 perguntas, o ganho real no ampliado é de aproximadamente +0.06-0.07, não +0.153.
+
+**Análise:** mesmo Q01 corrigido que o HyDE já resolvia (0.0→5.0), mas latência ainda maior (multiquery dispara N buscas extras, uma por reformulação). **Q54 quebrou pela segunda vez** (3.5→0.5 aqui; 3.5→0.5 no Passo 26 também) com qualquer técnica de expansão de query (HyDE ou multiquery) — padrão recorrente, não coincidência, candidato a investigação futura dedicada. Ganho líquido real (após descontar o confundimento Q86/Q87) é próximo de zero, com custo de latência maior que o já rejeitado no Passo 26.
+
+**Decisão:** revertido — `multiquery_enabled=false`.
 
 **Estado da configuração ao final deste passo:** idêntico ao Passo 25 (`reranker_enabled=true`; demais 4 flags `false`).
 
