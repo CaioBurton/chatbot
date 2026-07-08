@@ -2104,6 +2104,7 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | **Passo 23: fix `_promote_pinned()` — sempre promove, nunca só pula** | **4.210/5 (84.2%)** | **2** | **20** | ✅ **novo recorde sob `embedding_provider=gemini`** (Q15/Q19 recuperados; Q22 remanescente — ver `PATCH /documents/{doc_id}`) |
 | Passo 24: fix `_RAG_PAYLOAD_FILTER` (rescue gated ao reranker) + backfill `edital_cycle` | 4.10/5 (82.0%) | 0 | 19 | ✅ sem regressão estrutural (−0.11 vs P23, dentro do ruído do LLM); golden-set ampliado (90 perguntas, dataset separado): 2.702→2.802/5 |
 | Passo 25: `reranker_enabled=true` (desbloqueia o rescue do Passo 24) | 4.068/5 (81.4%) | 3 | 20 | ⚠️ ver análise — net positivo forte no ampliado, leve queda no original (Q01/Q16 falsos positivos de roteamento) |
+| Passo 26: `hyde_enabled=true` (+ reranker) | 3.900/5 (78.0%) | 4 | 16 | ❌ revertido — net neutro no agregado (120 perguntas: +0.06) mas +4s de latência média; repete o veredicto do Passo 7 original (HyDE net-negativo) |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
@@ -2209,6 +2210,41 @@ O cross-encoder pontua alto porque "Programa Institucional de Bolsas de Iniciaç
 Investigação dos 4 pares identificados no Passo 24 confirmou duplicação genuína: 3 pares (editais PIBIC/PIBIC-EM/PIBITI 2026-2027) com chunks **byte-idênticos** entre as duas cópias; o 4º par (Centros Temáticos 2025) com 276 de 279 chunks idênticos e os 3 restantes com o mesmo texto nos primeiros 200 caracteres (ruído trivial de extração). Todos os 4 pares foram criados em 2026-07-07 02:01 e reenviados em 2026-07-08 12:31 — mesma janela estreita, indicando um reenvio em lote acidental.
 
 Excluídas as 4 cópias mais recentes (2026-07-08) via `DELETE /documents/{id}`, mantendo as originais de 2026-07-07: `6fac377a` (PIBIC), `39ce4d1b` (PIBIC-EM), `1075bf3e` (PIBITI), `34db2d1a` (Centros Temáticos). Confirmado via `psql` que não restam nomes duplicados e as cópias originais permanecem ativas com a mesma contagem de chunks.
+
+---
+
+## Passo 26 — `hyde_enabled = true` (ciclo de reabilitação gradual, com reranker já ligado)
+
+**Data:** 2026-07-08
+**Motivação:** próximo flag do ciclo de reabilitação gradual, agora com `reranker_enabled=true` (decidido no Passo 25) como base.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 26 (+HyDE)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.068/5 (81.4%) | **3.900/5 (78.0%)** | −0.168 |
+| Ruins (< 2.5) | 3/30 | 4/30 | +1 |
+| Excelentes (≥ 4.5) | 20/30 | 16/30 | −4 |
+| Tempo médio de resposta | 14.74 s | **19.07 s** | +4.33 s |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 26 (+HyDE)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.553/5 (71.1%) | **3.694/5 (73.9%)** | +0.141 |
+| Ruins (< 2.5) | 17/90 | 15/90 | −2 |
+| Excelentes (≥ 4.5) | 43/90 | 44/90 | +1 |
+| Tempo médio de resposta | 12.25 s | 15.80 s | +3.55 s |
+
+**Líquido combinado (120 perguntas, média ponderada):** +0.06 — essencialmente neutro. HyDE resolveu Q01 (0.0→4.5, o falso-positivo de roteamento do Passo 25) mas quebrou Q06 (−4.3), Q09 (−2.2), Q25 (−1.3), Q29 (−0.8) no original, e Q54/Q119 (−3.0 cada) no ampliado — trocou um conjunto de acertos por outro sem ganho real, com custo de latência substancial (+3.5 a +4.3 s por turno, a chamada extra ao LLM para gerar o documento hipotético).
+
+**Análise:** repete o veredicto já registrado no **Passo 7 do ciclo original** ("HyDE enriquecido foi net negativo, −0.27"). A reformulação hipotética do HyDE parece redistribuir aleatoriamente qual vocabulário o retrieval prioriza — ajuda quando a pergunta original tem um vocabulário pobre para embedding (Q01), atrapalha quando o vocabulário original já era o ideal e o HyDE introduz ruído lexical (Q06, Q09, Q54, Q119). Sem um padrão previsível de quando ajuda vs atrapalha, e sem ganho agregado que justifique o custo de latência.
+
+**Decisão:** revertido — `hyde_enabled=false`.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 25 (`reranker_enabled=true`; demais 4 flags `false`).
 
 ---
 
