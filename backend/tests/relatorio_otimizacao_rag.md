@@ -2103,6 +2103,7 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | Passo 22: child-chunk overlap + infra `edital_cycle` + consolidação pinned injections | 3.783/5 (75.7%) | 5 | 17 | ✅ (regressão temporária: Q15/Q19/Q25 caem para fallback — bug de promoção de pinned injection, corrigido no Passo 23; Q22 expõe lacuna de retroatividade do `edital_cycle`) |
 | **Passo 23: fix `_promote_pinned()` — sempre promove, nunca só pula** | **4.210/5 (84.2%)** | **2** | **20** | ✅ **novo recorde sob `embedding_provider=gemini`** (Q15/Q19 recuperados; Q22 remanescente — ver `PATCH /documents/{doc_id}`) |
 | Passo 24: fix `_RAG_PAYLOAD_FILTER` (rescue gated ao reranker) + backfill `edital_cycle` | 4.10/5 (82.0%) | 0 | 19 | ✅ sem regressão estrutural (−0.11 vs P23, dentro do ruído do LLM); golden-set ampliado (90 perguntas, dataset separado): 2.702→2.802/5 |
+| Passo 25: `reranker_enabled=true` (desbloqueia o rescue do Passo 24) | 4.068/5 (81.4%) | 3 | 20 | ⚠️ ver análise — net positivo forte no ampliado, leve queda no original (Q01/Q16 falsos positivos de roteamento) |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
@@ -2150,6 +2151,44 @@ Ganho modesto porque o Fix 1 (a causa raiz nº 1, responsável pela maioria dos 
 **Estado da configuração ao final deste passo:** idêntico ao Passo 23 (todos os 5 flags `false`); `edital_cycle` retroagido nos 18 editais/aditivos recorrentes; `_RAG_PAYLOAD_FILTER` com rescue implementado mas dormant.
 
 **Passo 25 (pendente, já esperado pelo ciclo de reabilitação gradual):** reativar `reranker_enabled=true` desbloqueia o Fix 1 — validado em smoke test (8/10 perguntas de portaria/RAA corrigidas), mas precisa da mesma metodologia dos Passos 1-10/20-23 (full eval de 30 + 90 perguntas, medir impacto líquido, decidir manter/reverter) antes de virar padrão de produção.
+
+---
+
+## Passo 25 — `reranker_enabled = true` (desbloqueia o rescue do Passo 24)
+
+**Data:** 2026-07-08
+**Motivação:** o Fix 1 do Passo 24 (rescue de portaria/relatorio) foi implementado mas deixado dormant sob `reranker_enabled=false`. Este passo reativa o reranker — mesma metodologia dos Passos 1-10/20-23: mudar um flag, rodar os dois golden-sets completos, medir o impacto líquido.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 23 (baseline) | **Passo 25** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.210/5 (84.2%) | **4.068/5 (81.4%)** | −0.142 |
+| Ruins (< 2.5) | 2/30 | 3/30 | +1 |
+| Excelentes (≥ 4.5) | 20/30 | 20/30 | 0 |
+| Tempo médio de resposta | ~10.7 s | **14.74 s** | +4.0 s |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 24 (reranker off) | **Passo 25 (reranker on)** | Δ |
+|---|---|---|---|
+| Pontuação média | 2.802/5 (56.0%) | **3.553/5 (71.1%)** | **+0.751** |
+| Ruins (< 2.5) | 31/90 | **17/90** | **−14** |
+| Excelentes (≥ 4.5) | 29/90 | **43/90** | **+14** |
+| Tempo médio de resposta | ~11 s | 12.25 s | +1.25 s |
+
+**Maiores ganhos (ampliado)** — o rescue funciona exatamente como projetado: Q98, Q66, Q104, Q103, Q100 (0.0→5.0), Q97/Q70/Q69/Q52/Q107 (0.0→4.8), Q109/Q106 (→4.6/4.8), Q111/Q105 (→4.5), Q110 (→4.2) — praticamente toda a categoria portaria/RAA/Ética/Inovação sai de fallback total.
+
+**Regressões identificadas — duas causas distintas, nenhuma nova:**
+
+1. **Falso positivo de roteamento** (padrão idêntico ao Passo 5, agora via cross-encoder em vez de RRF): Q01 (4.5→0.0) e Q16 (4.8→0.0) no golden-set original — ambas perguntas *genéricas* sobre o programa ("Quais são os objetivos do PIBIC?", "Qual o foco do PIBITI?"). Verificado diretamente via `/chat/stream`: o reranker roteia para portarias que designam membros de comitê PIBIC/PIBITI (citam o nome do programa proeminentemente), a mesma armadilha que motivou o filtro original — só que agora o cross-encoder, não o RRF, é enganado. O rescue reduz a frequência desse problema (2/30 vs a maioria das perguntas quando o roteamento usava RRF bruto, ver tentativas descartadas do Passo 24) mas não o elimina.
+2. **Recall dentro do documento correto, sem relação com o roteamento**: verificado em Q82 ("titulação mínima do coordenador de núcleo") — a fonte citada nas `sources` **é** a Resolução 140/2021 correta, mas o chunk específico com a resposta não sobreviveu ao `reranker_top_k=5`/`reranker_score_threshold=0.5`. Mesma categoria de falha já documentada repetidamente neste relatório (chunk certo fora do top-k do reranker) — não é causada por este passo, é o custo normal de trocar "ordenar por score vetorial" por "ordenar pelo cross-encoder", que às vezes pondera diferente. Afeta a maioria das demais regressões do ampliado (Q39, Q41, Q56, Q76, Q89, Q95, Q113).
+
+**Análise:** líquido fortemente positivo — no ampliado, a categoria portaria/RAA praticamente inteira (que valia 0.0 em ~25 perguntas) passa a responder corretamente, um ganho de **+0.751** absorvendo com folga as ~8 perguntas que perderam pontos. No golden-set original a queda é pequena (−0.142) e concentrada em 2 casos específicos e já compreendidos (perguntas de fraseado genérico sobre o programa, sem menção a artigo/seção específica). Custo de latência real: +4 s no original (reranker processando 2x o volume — pool primário + pool de rescue), +1.25 s no ampliado. Consistente com o padrão histórico do projeto (Passo 21, Passo 12): toda técnica nova troca alguns casos por outros; a decisão de manter é do dono do produto, não puramente da métrica agregada — Q01/Q16 regredirem de 4.5-4.8 para fallback total é um retrocesso visível para um usuário real, mesmo com o ganho líquido nos 90.
+
+**Estado da configuração ao final deste passo:** `reranker_enabled=true`; demais 4 flags inalterados (`false`). **Decisão de manter ou reverter pendente do dono do produto** — ver observação acima.
 
 ---
 
