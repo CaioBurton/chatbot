@@ -2188,7 +2188,21 @@ Ganho modesto porque o Fix 1 (a causa raiz nº 1, responsável pela maioria dos 
 
 **Análise:** líquido fortemente positivo — no ampliado, a categoria portaria/RAA praticamente inteira (que valia 0.0 em ~25 perguntas) passa a responder corretamente, um ganho de **+0.751** absorvendo com folga as ~8 perguntas que perderam pontos. No golden-set original a queda é pequena (−0.142) e concentrada em 2 casos específicos e já compreendidos (perguntas de fraseado genérico sobre o programa, sem menção a artigo/seção específica). Custo de latência real: +4 s no original (reranker processando 2x o volume — pool primário + pool de rescue), +1.25 s no ampliado. Consistente com o padrão histórico do projeto (Passo 21, Passo 12): toda técnica nova troca alguns casos por outros; a decisão de manter é do dono do produto, não puramente da métrica agregada — Q01/Q16 regredirem de 4.5-4.8 para fallback total é um retrocesso visível para um usuário real, mesmo com o ganho líquido nos 90.
 
-**Estado da configuração ao final deste passo:** `reranker_enabled=true`; demais 4 flags inalterados (`false`). **Decisão de manter ou reverter pendente do dono do produto** — ver observação acima.
+**Estado da configuração ao final deste passo:** `reranker_enabled=true`; demais 4 flags inalterados (`false`). **Decisão tomada: manter `reranker_enabled=true`** — o saldo (+0.751 no ampliado vs −0.142 no original) foi considerado fortemente positivo; Q01/Q16 ficam documentados como limitação conhecida (ver investigação abaixo) em vez de bloquear a adoção.
+
+### Investigação do padrão Q01/Q16 (2026-07-08)
+
+Diagnóstico direto via `_union_search`/`rerank` isolados confirmou a causa exata, e **não é** o lixo de rodapé do SIPAC (ver abaixo) — é uma recorrência do viés documentado no Passo 5, agora enganando o cross-encoder em vez do RRF. As portarias vencedoras no pool de resgate (`portaria 21.pdf`, `portaria 23.pdf`, `Portaria 5`) abrem com:
+
+> "MINISTÉRIO DA EDUCAÇÃO UNIVERSIDADE FEDERAL DO PIAUÍ PORTARIA Nº 21/2025 — PROPESQI ... **Designa membros para compor o Comitê Externo do Programa Institucional de Bolsas de Iniciação Científica para o Ensino Médio — PIBIC-EM 2025-2026**"
+
+O cross-encoder pontua alto porque "Programa Institucional de Bolsas de Iniciação Científica" aparece por extenso logo no início — mas o resto do documento é só uma lista de nomes de pesquisadores designados para comitê externo, nunca descreve objetivo/foco. Q01 e Q16 são perguntas *genéricas* ("quais os objetivos do PIBIC", "qual o foco do PIBITI") sem nenhum detalhe específico (número de seção, data, artigo) que ajudaria o cross-encoder a preferir o conteúdo real do edital.
+
+**Achado secundário, não é a causa:** 100% dos 251 chunks de `doc_type=portaria` carregam lixo de rodapé do visualizador SIPAC ("dd/mm/aa, hh:mm https://sipac.ufpi.br/sipac/protocolo/documento/documento_visualizacao.jsf?imprimir=true&idDoc=NNNNNNN"), às vezes interrompendo frases no meio do texto extraído. Confirmado que o conteúdo real (não só o lixo) é o que pontua alto — limpar esse boilerplate na ingestão não resolveria Q01/Q16, mas é sujeira de dados que vale endereçar separadamente.
+
+**Padrão identificável e estreito:** ambos os casos vencedores começam com a frase burocrática fixa "Designa membros para compor..." — uma portaria de designação de comitê estruturalmente nunca responde "quais são os objetivos/o foco de um programa". Um patch pontual (penalizar/excluir esse padrão do pool de resgate para perguntas de definição/objetivo genéricas) resolveria os 2 casos conhecidos, mas é um patch estreito no mesmo estilo dos pinned injections já existentes no arquivo.
+
+**Decisão (2026-07-08):** aceitar como limitação conhecida por ora — o saldo já é fortemente positivo, e não há garantia de que só existam esses 2 casos no universo de perguntas reais dos usuários. Revisitar se o padrão se repetir com mais frequência em uso real (monitorar via feedback/avaliação contínua).
 
 ---
 
