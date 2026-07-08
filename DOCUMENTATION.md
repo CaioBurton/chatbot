@@ -286,9 +286,10 @@ Esses parâmetros são lidos a cada requisição via `get_rag_config(db)` e alte
 | `GET` | `/documents` | Lista documentos com paginação | Admin |
 | `GET` | `/documents/stats` | Totais: documentos, chunks, erros | Admin |
 | `GET` | `/documents/{id}` | Detalhes de um documento | Admin |
+| `PATCH` | `/documents/{id}` | Corrige `doc_type`/`edital_ref`/`edital_cycle` de um documento já indexado; purga os chunks antigos no Qdrant/Postgres e reagenda a ingestão | Admin |
 | `DELETE` | `/documents/{id}` | Remove do PostgreSQL e Qdrant | Admin |
 | `POST` | `/documents/{id}/reindex` | Reprocessa documento com erro | Admin |
-| `POST` | `/documents/reindex` | Reindexação total ou parcial (`scope: "all"\|"pending"`) | Admin |
+| `POST` | `/documents/reindex-all` | Reindexação total ou parcial (`scope: "all"\|"pending"`) | Admin |
 | `POST` | `/documents/search` | Busca híbrida com reranking opcional | Admin |
 | `POST` | `/documents/search/expanded` | Busca com expansão para chunks pai | Admin |
 
@@ -301,6 +302,7 @@ Esses parâmetros são lidos a cada requisição via `get_rag_config(db)` e alte
 | `source_url` | string (opcional) | Link externo para o documento original |
 | `doc_type` | string | `edital`, `aditivo`, `resolucao`, `tutorial`, `portaria`, `relatorio` |
 | `edital_ref` | string (opcional) | Para aditivos: nome do edital de referência (ativa expansão bidirecional no RAG) |
+| `edital_cycle` | string (opcional) | Ciclo do edital (ex.: `"2025/2026"`). Usado para excluir o documento do contexto quando o admin define um `active_edital_cycle` diferente em `rag_config` — documentos com `edital_cycle=null` permanecem elegíveis em qualquer ciclo |
 
 **Validações de segurança no upload:**
 - `Content-Type: application/pdf` (MIME allowlist)

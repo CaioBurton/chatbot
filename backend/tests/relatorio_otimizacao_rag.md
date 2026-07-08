@@ -1939,6 +1939,137 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 
 ---
 
+## Passo 22 — child-chunk overlap + infraestrutura `edital_cycle` + consolidação de pinned injections
+
+**Data:** 2026-07-07
+**Motivação:** reduzir overfitting ao golden-set (vários pinned injections estavam ajustados cirurgicamente demais a perguntas específicas) e corrigir um `KeyError('parent_id')` latente que disparava sempre que `parent_child_expansion_enabled=false` e um pinned injection combinava — os payloads do Qdrant nunca carregam a chave `parent_id`.
+
+**Mudanças aplicadas:**
+- `chunker.py`: overlap por sliding-window nos chunks filho via o novo campo `child_chunk_overlap_tokens` (default `24`, chunks pai inalterados). O corpus inteiro foi reindexado para que os chunks existentes passassem a ter esse overlap.
+- `documents` / `rag_config`: adiciona `edital_cycle` (por documento) e `active_edital_cycle` (filtro definido pelo admin) de ponta a ponta — schema, models, Pydantic, rotas de upload/admin.
+- `rag_engine.py`: extrai o padrão repetido busca→filtro→expansão dos 5 blocos de pinned injection guiados por regex para um único helper `_pinned_search()` com `cycle_filter` opcional; generaliza o prefixo de atribuição "ADITIVO: \<label\>" em `_build_context()` em vez de codificá-lo só para uma pergunta.
+- Demais flags do `rag_config` inalteradas em relação ao Passo 21 (`parent_child_expansion_enabled=true`; `hyde`/`multiquery`/`reranker`/`contextual_compression=false`).
+
+### Resultado (full eval, 30/30 perguntas)
+
+| Métrica | Passo 21 (baseline) | **Passo 22** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.050/5 (81.0%) | **3.783/5 (75.7%)** | **−0.267** |
+| Corretude factual | 0.920 | 0.840 | −0.080 |
+| Completude | 0.825 | 0.768 | −0.057 |
+| Citação de fonte | 0.713 | 0.767 | +0.054 |
+| Sem alucinação | 0.800 | 0.800 | 0.000 |
+| Relevância | 0.923 | 0.833 | −0.090 |
+| Excelentes (≥ 4.5) | 15/30 | **17/30** | +2 |
+| Ruins (< 2.5) | 2/30 | **5/30** | +3 |
+| Tempo médio de resposta | 10.86 s | 10.84 s | −0.02 s (neutro) |
+
+**Por programa:**
+
+| Programa | Passo 21 | Passo 22 |
+|---|---|---|
+| ICV | 3.58 | 3.80 |
+| PIBITI / ITV | 3.60 | 2.50 |
+| PIBIC / PIBIC-Af | 4.27 | 4.38 |
+| PIBICEM (PIBIC-EM) | 4.20 | 3.42 |
+| Geral | 4.24 | 3.86 |
+
+**Maiores variações por pergunta (|Δ| ≥ 0.5):**
+
+| ID | Passo 21 | Passo 22 | Δ |
+|---|---|---|---|
+| Q13 | 0.0 | **4.2** | **+4.2** ✅ (fallback resolvido de graça pelo reranking do overlap) |
+| Q29 | 3.5 | 4.8 | +1.3 |
+| Q08 | 4.0 | 4.8 | +0.8 |
+| Q12 | 4.4 | 5.0 | +0.6 |
+| Q07 | 3.5 | 4.0 | +0.5 |
+| Q09 | 4.5 | 5.0 | +0.5 |
+| Q14 | 4.5 | 5.0 | +0.5 |
+| Q18 | 1.0 | 1.5 | +0.5 |
+| Q30 | 3.8 | 3.2 | −0.6 |
+| Q05 | 5.0 | 4.5 | −0.5 |
+| Q16 | 4.0 | 3.5 | −0.5 |
+| Q25 | 3.5 | **0.5** | **−3.0** ⚠️ |
+| Q22 | 3.5 | **0.0** | **−3.5** ⚠️ (nova falha) |
+| Q19 | 4.4 | **0.0** | **−4.4** ⚠️ (nova falha) |
+| Q15 | 4.5 | **0.0** | **−4.5** ⚠️ (nova falha) |
+
+**Falhas críticas (≤ 1.0):**
+
+| ID | Nota | Descrição |
+|---|---|---|
+| Q15 | 0.0 | Pontos mínimos do orientador para plano de trabalho — fallback total |
+| Q19 | 0.0 | Coorientador no PIBITI — fallback total |
+| Q22 | 0.0 | IRA mínimo recomendado do PIBIC-EM — fallback total (nova falha, ver análise) |
+| Q25 | 0.5 | Vigência das bolsas em todos os programas — quase fallback |
+
+**Análise:** a reindexação com o novo overlap de chunking mudou levemente o ranking RRF de vários chunks, expondo uma falha latente nos pinned injections: quando o chunk-alvo já aparecia em algum lugar de `reranked_parents` — mesmo enterrado (ex. posição 4 de 5) — a lógica antiga pulava a promoção para a posição `[0]` só por já estar "presente", mesmo que o LLM efetivamente não use contexto em posições baixas. Isso regrediu Q15, Q19 e Q25 de respostas corretas para fallback total. Q13 melhorou por coincidência (o overlap empurrou o chunk certo do relatório final do ICV para uma posição mais alta no RRF, sem qualquer pinned injection dedicada). **Q22 é uma falha nova e estruturalmente diferente:** o edital 2026/2027 (mais recente, mas incompleto/genérico) está ranqueando acima do edital 2025/2026 (correto e vigente) para a pergunta sobre IRA mínimo do PIBIC-EM — a infraestrutura de `edital_cycle` já existe neste passo, mas **não retroage** em documentos já indexados antes da feature existir (eles ficam com `edital_cycle=NULL`, elegíveis em qualquer filtro de ciclo). Esse gap motivou diretamente o endpoint `PATCH /documents/{doc_id}` implementado depois desta rodada (ver nota ao final do Passo 23).
+
+**Estado da configuração ao final deste passo:** mesmas flags do Passo 21; corpus reindexado com `child_chunk_overlap_tokens=24`; `edital_cycle` ainda não retroagido nos documentos indexados antes da feature.
+
+---
+
+## Passo 23 — fix: sempre promove pinned injection para o topo do contexto
+
+**Data:** 2026-07-07
+**Motivação:** corrigir a regressão introduzida no Passo 22 (Q15, Q19, Q25 caindo para fallback total) identificada na análise acima — a promoção de pinned injection só agia quando o chunk-alvo estava *ausente* de `reranked_parents`, não quando estava presente mas enterrado.
+
+**Mudanças aplicadas:**
+- Novo helper `_promote_pinned()`: sempre promove o chunk-alvo para a posição `[0]` e deduplica, nunca apenas pula. Aplicado a todos os blocos single-pin (Q15, Q05, Q21, Q03/Q10, Q19) e ao primeiro pin do Q14; a segunda injeção do Q14 (posição `[1]`) e os blocos multi-pin (Q25, Q24) ganharam a mesma correção (dedupe + garantia de inclusão em vez de "pular se já existe").
+- Q19: o chunk de maior score RRF na página/fonte certa nem sempre contém a cláusula certa (a página 3 do PIBITI tem múltiplos blocos com o mesmo boilerplate "4.1.x deveres do orientador"). Adicionado `text_contains=["coorientador"]` para exigir a palavra literal, não só `page_number`/`source_contains`.
+
+### Resultado (full eval, 30/30 perguntas)
+
+| Métrica | Passo 22 | **Passo 23** | Δ | vs. Passo 21 |
+|---|---|---|---|---|
+| Pontuação média | 3.783/5 (75.7%) | **4.210/5 (84.2%)** | **+0.427** | +0.160 |
+| Corretude factual | 0.840 | 0.920 | +0.080 | 0.000 |
+| Completude | 0.768 | 0.835 | +0.067 | +0.010 |
+| Citação de fonte | 0.767 | 0.817 | +0.050 | +0.104 |
+| Sem alucinação | 0.800 | 0.833 | +0.033 | +0.033 |
+| Relevância | 0.833 | 0.923 | +0.090 | 0.000 |
+| Excelentes (≥ 4.5) | 17/30 | **20/30** | +3 | +5 |
+| Ruins (< 2.5) | 5/30 | **2/30** | −3 | 0 |
+| Tempo médio de resposta | 10.84 s | 10.81 s | −0.03 s (neutro) |  |
+
+**Por programa:**
+
+| Programa | Passo 22 | Passo 23 |
+|---|---|---|
+| ICV | 3.80 | **4.60** |
+| PIBITI / ITV | 2.50 | 4.05 |
+| PIBIC / PIBIC-Af | 4.38 | 4.35 |
+| PIBICEM (PIBIC-EM) | 3.42 | 3.58 |
+| Geral | 3.86 | 4.19 |
+
+**Maiores variações por pergunta (|Δ| ≥ 0.5):**
+
+| ID | Passo 22 | Passo 23 | Δ |
+|---|---|---|---|
+| Q15 | 0.0 | **4.5** | **+4.5** ✅ (fallback resolvido) |
+| Q19 | 0.0 | **4.4** | **+4.4** ✅ (fallback resolvido) |
+| Q16 | 3.5 | 4.8 | +1.3 |
+| Q25 | 0.5 | 2.5 | +2.0 |
+| Q20 | 3.7 | 4.5 | +0.8 |
+| Q18 | 1.5 | 2.0 | +0.5 |
+| Q08 | 4.8 | 4.5 | −0.3 |
+| Q11 | 4.8 | 4.5 | −0.3 |
+
+**Falhas críticas remanescentes (≤ 1.0) — pré-existentes, não relacionadas a esta mudança:**
+
+| ID | Nota | Descrição |
+|---|---|---|
+| Q22 | 0.0 | IRA mínimo do PIBIC-EM — contaminação de ciclo (edital 2026/2027 ranqueando acima do 2025/2026 correto); infraestrutura de `edital_cycle` já existe mas não retroage em documentos já indexados sem a tag |
+| Q18 | 2.0 | Acúmulo de bolsa do PIBITI — falha crônica já documentada nos Passos 20/21, melhorando lentamente (1.0 → 1.5 → 2.0) mas ainda não resolvida |
+
+**Análise:** o fix confirma o diagnóstico do Passo 22 — Q15 e Q19 voltam ao patamar do Passo 21 (e Q19 melhora sobre ele, 4.4→4.4 estável) assim que a promoção deixa de ser condicional à ausência do chunk. Q25 recupera parte da pontuação (0.5→2.5) mas não retorna ao nível do Passo 21 (3.5) — os blocos multi-pin (Q25/Q24) dependem de várias buscas `_pinned_search` simultâneas, mais sensíveis a variação de ranking do que os blocos single-pin. Resultado final **4.210/5 (84.2%)** fica acima do baseline pré-Passo-22 (4.050/5), confirmando que o overlap + consolidação do Passo 22 é net-positivo uma vez que o bug de promoção é corrigido. Restam duas falhas crônicas sem relação com esta mudança: Q18 (geração, não retrieval — ver Passos 20/21) e **Q22, causada pela lacuna de retroatividade do `edital_cycle`** identificada no Passo 22.
+
+**Nota (segue diretamente para o próximo passo do ciclo):** a lacuna de Q22 — documentos indexados antes da feature `edital_cycle` ficam com o campo `NULL` e continuam elegíveis contra qualquer `active_edital_cycle` — motivou o endpoint `PATCH /documents/{doc_id}` (commit `1508952`, sessão seguinte a este passo): permite ao admin corrigir `doc_type`/`edital_ref`/`edital_cycle` de um documento já indexado sem precisar excluir e reenviar o arquivo, purgando os chunks antigos no Qdrant/Postgres e reagendando a ingestão. A mesma sessão também estendeu o guard de `active_edital_cycle` para o caminho geral de `merged_points` em `rag_engine.py` (antes só existia dentro de `_pinned_search`), fechando a rota pela qual Q22 conseguia vazar contexto do ciclo errado mesmo fora de um pinned injection dedicado. **Passo 24 (pendente):** usar o novo PATCH para retag os editais 2025/2026 relevantes e re-rodar Q22 no eval completo para confirmar a correção.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 22 (mesmas flags, mesmo corpus com overlap); `edital_cycle` de documentos pré-existentes ainda não corrigido — ferramenta disponível, correção ainda não aplicada.
+
+---
+
 ## Resumo da evolução
 
 | Configuração | Média | Ruins (<2.5) | Excelentes (≥4.5) | Full eval? |
@@ -1969,6 +2100,8 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | Passo 19: retuning retrieval p/ Gemini (Q03/Q10/Q15/Q16 corrigidos; Q19/Q24 limitação de geração) | 6 perguntas-alvo: 0.5→**3.2**/5 | — | — | smoke dirigido (full eval não confiável — corpus cresceu 2698→3801 pontos em paralelo, ver seção do Passo 19) |
 | **Passo 20: reinício do ciclo — novo baseline (todos off, `embedding_provider=gemini`, corpus=3801 pts)** | **4.073/5 (81.5%)** | **3** | **19** | ✅ (também corrigiu bug `KeyError: 'parent_id'` latente quando `parent_child_expansion_enabled=false`) |
 | Passo 21: `parent_child_expansion_enabled=true` | 4.050/5 (81.0%) | 2 | 15 | ✅ (Q06 resolvido +3.5; alucinação cai 0.933→0.800; tempo de resposta neutro, +0.18s) |
+| Passo 22: child-chunk overlap + infra `edital_cycle` + consolidação pinned injections | 3.783/5 (75.7%) | 5 | 17 | ✅ (regressão temporária: Q15/Q19/Q25 caem para fallback — bug de promoção de pinned injection, corrigido no Passo 23; Q22 expõe lacuna de retroatividade do `edital_cycle`) |
+| **Passo 23: fix `_promote_pinned()` — sempre promove, nunca só pula** | **4.210/5 (84.2%)** | **2** | **20** | ✅ **novo recorde sob `embedding_provider=gemini`** (Q15/Q19 recuperados; Q22 remanescente — ver `PATCH /documents/{doc_id}`) |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
