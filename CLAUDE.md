@@ -69,11 +69,12 @@ Frontend (React/Vite/TS) → Nginx :3000 → /api proxy → Backend (FastAPI) :8
 | Vector DB        | Qdrant (named vectors: `dense` + `sparse`)                          |
 | LLM (local)      | Ollama → `gemma3:12b`                                               |
 | LLM (external)   | Gemini / OpenAI / Anthropic — switchable via `rag_config` at runtime|
-| Embeddings       | `bge-m3` via Ollama                                                 |
-| Reranker         | `BAAI/bge-reranker-v2-m3` (sentence-transformers, CPU or GPU)       |
-| Sparse encoder   | fastembed BM42                                                      |
+| Embeddings (local)    | `bge-m3` via Ollama                                            |
+| Embeddings (external) | Gemini `gemini-embedding-001` — switchable via `rag_config`   |
+| Reranker         | `BAAI/bge-reranker-v2-m3` (sentence-transformers, CPU on this branch)|
+| Sparse encoder   | fastembed BM42 (CPU)                                                |
 | Rate limiter     | slowapi (5 req/min on `/chat/stream`, 20 req/min on `/chat/sessions`)|
-| Infrastructure   | Docker Compose + GPU overlay (NVIDIA RTX 5060 Ti 16 GB)             |
+| Infrastructure   | Docker Compose (`docker-compose.aws.yml`) — no GPU/Ollama on this branch|
 
 ### Key Files
 
@@ -92,10 +93,11 @@ Frontend (React/Vite/TS) → Nginx :3000 → /api proxy → Backend (FastAPI) :8
 
 ### Evaluation & TCC
 
-- `backend/tests/groundtruth_chatbot_rag.csv` — 30-question ground truth
+- `backend/tests/groundtruth_chatbot_rag.csv` — original 30-question ground truth
+- `backend/tests/groundtruth_chatbot_rag_ampliado.csv` — expanded 90-question ground truth (added at step 25, run alongside the original set on every step since to catch regressions the smaller set misses)
 - `backend/tests/run_groundtruth_eval.py` — evaluation runner (supports `--judge gemini` and `--judge ollama`)
-- `backend/tests/relatorio_otimizacao_rag.md` — full optimization cycle report (16 steps, 3.63 → 4.562/5)
-- `backend/tests/groundtruth_chatbot_rag_resultados_passo*.csv` — per-step evaluation results
+- `backend/tests/relatorio_otimizacao_rag.md` — full optimization cycle report (33 steps). Baseline (bge-m3 local embeddings): 3.63/5. Migrating embeddings to Gemini for the cloud deploy erased most of that gain, forcing a new baseline at step 20 (4.073/5) under the all-Gemini pipeline. Current production config (step 32; step 33 was tested and reverted): **4.463/5 (89.3%)** on the original 30-question set, **3.826/5 (76.5%)** on the expanded 90-question set.
+- `backend/tests/groundtruth_chatbot_rag_resultados_passo*.csv` / `..._ampliado_resultados_passo*.csv` — per-step evaluation results for each golden-set
 
 ### API Routes
 

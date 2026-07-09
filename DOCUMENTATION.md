@@ -571,9 +571,13 @@ Resultados são armazenados na tabela `rag_evaluations`.
 
 **Harness de avaliação offline (`backend/tests/run_groundtruth_eval.py`):**
 
-Avalia o pipeline contra 30 perguntas com gabarito (`backend/tests/groundtruth_chatbot_rag.csv`) usando `gemini-3.1-flash-lite` como LLM judge (free tier, 15 RPM). Cada pergunta consome ~5 chamadas Gemini (HyDE + multi-query + geração + judge + margem). O script gerencia rate limiting automaticamente com intervalo mínimo de 35 s/pergunta.
+Avalia o pipeline contra dois ground truths — o original de 30 perguntas (`backend/tests/groundtruth_chatbot_rag.csv`) e um conjunto ampliado de 90 perguntas adicionais (`backend/tests/groundtruth_chatbot_rag_ampliado.csv`, introduzido no Passo 25 para reduzir o risco de overfitting às 30 perguntas originais) — usando `gemini-3.1-flash-lite` como LLM judge (free tier, 15 RPM). Cada pergunta consome ~5 chamadas Gemini (HyDE + multi-query + geração + judge + margem). O script gerencia rate limiting automaticamente com intervalo mínimo de 35 s/pergunta. Desde o Passo 25, toda decisão de manter/reverter uma mudança é validada nos dois conjuntos (120 perguntas combinadas).
 
-Melhor resultado obtido: **4.620/5 (92.4%)** — Passo 14, com gemini-3.1-flash-lite como LLM do pipeline e judge.
+**Melhor resultado no set original (embeddings locais bge-m3):** 4.620/5 (92.4%) — Passo 14. Esse recorde não é mais alcançável no pipeline atual: a migração de `embedding_provider` para Gemini (necessária para o deploy cloud/AWS) anulou quase todo o ganho acumulado dos 17 passos iniciais, forçando um novo baseline no Passo 20 (4.073/5) sob embeddings 100% Gemini.
+
+**Estado de produção atual** (configuração do Passo 32 — o Passo 33 foi testado e revertido por regressão na métrica de ausência de alucinação):
+- Golden-set original (30 perguntas): **4.463/5 (89.3%)**
+- Golden-set ampliado (90 perguntas): **3.826/5 (76.5%)**
 
 ---
 
@@ -974,11 +978,12 @@ python tests/run_groundtruth_eval.py
 
 | Arquivo | Descrição |
 |---------|-----------|
-| `tests/groundtruth_chatbot_rag.csv` | Ground truth: 30 perguntas + respostas esperadas + keywords |
-| `tests/groundtruth_chatbot_rag_resultados_passoN_full.csv` | Resultado do eval do Passo N |
-| `tests/relatorio_otimizacao_rag.md` | Relatório completo do ciclo de otimização (Passos 5–14) |
+| `tests/groundtruth_chatbot_rag.csv` | Ground truth original: 30 perguntas + respostas esperadas + keywords |
+| `tests/groundtruth_chatbot_rag_ampliado.csv` | Ground truth ampliado: 90 perguntas adicionais (desde o Passo 25) |
+| `tests/groundtruth_chatbot_rag_resultados_passoN_full.csv` / `..._ampliado_resultados_passoN.csv` | Resultado do eval do Passo N, por golden-set |
+| `tests/relatorio_otimizacao_rag.md` | Relatório completo do ciclo de otimização (Passos 5–33) |
 
-**Evolução de qualidade (gemini-3.1-flash-lite):**
+**Evolução de qualidade (gemini-3.1-flash-lite) — ciclo 1, embeddings locais bge-m3:**
 
 | Passo | Melhoria | Pontuação |
 |-------|----------|-----------|
@@ -989,4 +994,18 @@ python tests/run_groundtruth_eval.py
 | 11 | Reranker GPU + warmup | 4.52/5 |
 | 12 | Q25 multi-edital + regra vigência | 4.37/5 |
 | 13 | Q21 PIBICEM colégio (pinned) | 4.57/5 |
-| **14** | **Q18 expansão lexical PIBITI** | **4.62/5 (92.4%)** |
+| 14 | Q18 expansão lexical PIBITI | 4.62/5 (92.4%) — recorde do ciclo 1, superado pela migração de embeddings abaixo |
+
+**Ciclo 2 — reinício após migração de `embedding_provider` para Gemini (deploy cloud/AWS):**
+
+A troca de bge-m3 (local) para Gemini (`gemini-embedding-001`) anulou quase todo o ganho acumulado do ciclo 1, forçando um novo baseline. A partir do Passo 25, cada mudança é validada tanto no golden-set original (30 perguntas) quanto no ampliado (90 perguntas).
+
+| Passo | Melhoria | Original (30) | Ampliado (90) |
+|-------|----------|----------------|----------------|
+| 20 | Novo baseline (embeddings Gemini, corpus estável) | 4.073/5 | — |
+| 30 | Pinned injection PIBIC | 4.165/5 | 3.807/5 |
+| 31 | Guard `_GENERIC_PROGRAM_DEFINITION_RE` (Q01/Q16) | 4.360/5 | 3.846/5 |
+| **32** | **Limpeza do system prompt (Nível 1)** | **4.463/5 (89.3%)** | **3.826/5 (76.5%)** |
+| 33 | Regras 10/11 (resposta parcial) — testado e revertido | 4.413/5 | 3.892/5 |
+
+**Estado de produção atual: configuração do Passo 32.** O Passo 33 melhorou a pontuação agregada mas piorou a métrica de ausência de alucinação nos dois golden-sets (−0.033 e −0.022) — revertido por esse motivo; ver `relatorio_otimizacao_rag.md` para a análise completa passo a passo.
