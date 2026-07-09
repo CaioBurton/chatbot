@@ -2109,6 +2109,7 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | Passo 28: `contextual_compression_enabled=true` (+ reranker) | 3.770/5 (75.4%) | 5 | 18 | ❌ revertido — **pior resultado do ciclo**: −0.298 no original, **−0.453 no ampliado** (destrói os ganhos de portaria/RAA do Passo 25: Q100/Q104/Q116 caem de 5.0→0.0) |
 | **Passo 29: `parent_child_expansion_enabled=true` (+ reranker)** | 3.813/5 (76.3%) | 4 | 17 | ✅ **mantido em produção** — líquido combinado +0.124 (120 perguntas), latência quase de graça; único de 4 flags sem regressão catastrófica |
 | **Passo 30: pinned injection PIBIC (Q06 fix)** | 4.165/5 (83.3%) | 2 | 20 | ✅ resolve a fragilidade recorrente de Q06 (0.2→5.0); Q01 recupera de bônus (0.0→4.8); zero regressão no ampliado (+0.091 líquido combinado) |
+| **Passo 31: guard `_GENERIC_PROGRAM_DEFINITION_RE` (Q01/Q16 fix)** | 4.360/5 (87.2%) | 1 | 20 | ✅ resolve o falso-positivo de roteamento do Passo 25 (Q16: 0.0→5.0; Q01: 4.8→5.0); +0.078 líquido combinado, sem regressões relevantes |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
@@ -2389,6 +2390,37 @@ Pendência identificada mas não resolvida: **Q06 quebra de forma consistente (~
 **Líquido combinado (120 perguntas): +0.091** — ganho limpo e cirúrgico, sem efeitos colaterais no conjunto mais amplo.
 
 **Estado da configuração ao final deste passo:** `reranker_enabled=true` + `parent_child_expansion_enabled=true` (inalterado desde o Passo 29); novo bloco de código ativo incondicionalmente (pinned injections não dependem de flags do `rag_config`).
+
+---
+
+## Passo 31 — Guard `_GENERIC_PROGRAM_DEFINITION_RE` (fix definitivo de Q01/Q16)
+
+**Data:** 2026-07-08
+**Motivação:** investigação direta do padrão Q01/Q16, identificado e aceito como limitação conhecida no Passo 25.
+
+**Diagnóstico revisitado:** confirmado ao vivo que o padrão persistia mesmo após os Passos 29/30 — `portaria 21.pdf`/`portaria 23.pdf` (designação de comitê PIBIC) e `Portaria 5` (designação de comitê PIBITI) continuavam vencendo o roteamento para as perguntas genéricas "quais são os objetivos do PIBIC" e "qual o foco do PIBITI". Diferente do fix do Q06 (Passo 30, onde o problema era um chunk correto enterrado no ranking dentro do pool certo), aqui o problema é a **decisão de roteamento em si** escolhendo o pool errado (portaria/relatório em vez de edital) — não há chunk "certo" a resgatar dentro do pool de portaria, porque portarias estruturalmente nunca respondem "quais são os objetivos de um programa" (designam comitês, prorrogam prazos, corrigem questões administrativas).
+
+**Fix:** novo guard `_GENERIC_PROGRAM_DEFINITION_RE`, aplicado na decisão de roteamento (não em um pinned injection dentro de um pool): quando a pergunta casa com o padrão "objetivo(s)/foco/finalidade/propósito + PIBIC/PIBIC-EM/PIBITI/ICV" (ou "o que é PIBIC/PIBITI/ICV"), o pool de resgate portaria/relatório **nem é consultado** — o pipeline usa direto o resultado do pool primário (edital), sem disputa de score. Diferente da tentativa de regex de intenção descartada no Passo 24 (que teria que cobrir toda formulação possível de "pergunta sobre portaria", tarefa impraticável), este guard cobre o lado oposto e muito mais restrito: um pequeno conjunto fixo de templates interrogativos ("objetivo", "foco", "finalidade", "o que é") que, combinados com um nome de programa conhecido, **nunca** têm resposta legítima em portaria/relatório — não é preciso cobrir todas as perguntas sobre portaria, só as que certamente NÃO são.
+
+**Ajuste de calibração:** a primeira versão do regex usava uma janela de 60 caracteres entre a palavra-gatilho ("objetivos") e o nome do programa, e falhou silenciosamente para Q01 — o nome completo por extenso ("Programa Institucional de Bolsas de Iniciação Científica") ocupa 62 caracteres sozinho, estourando a janela. Corrigido para 150 caracteres.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 30 (baseline) | **Passo 31 (+guard)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.165/5 (83.3%) | **4.360/5 (87.2%)** | **+0.195** |
+| Ruins (< 2.5) | 2/30 | 1/30 | −1 |
+| Excelentes (≥ 4.5) | 20/30 | 20/30 | 0 |
+
+**Q16: 0.0 → 5.0 (+5.0)** — corrigido. **Q01: 4.8 → 5.0 (+0.2)** — já vinha se recuperando por variação do LLM, agora estabilizado. Ganhos adicionais: Q15 (+0.5), Q18 (+0.5), Q25 (+1.0). Pequenas quedas em Q07 (−0.7), Q08 (−0.5), Q09 (−0.5) — dentro do padrão de ruído do juiz LLM já documentado repetidamente neste relatório.
+
+**Golden-set ampliado (90 perguntas):** 3.807/5 → 3.846/5 (+0.039) — leve melhora, sem regressão relevante (maior queda: −0.5).
+
+**Líquido combinado (120 perguntas): +0.078** — ganho limpo, fecha definitivamente o padrão Q01/Q16 que havia sido aceito como limitação conhecida no Passo 25.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 30; novo guard ativo incondicionalmente na decisão de roteamento do rescue.
 
 ---
 

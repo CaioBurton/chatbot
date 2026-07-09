@@ -73,6 +73,28 @@ _PORTARIA_RELATORIO_FILTER = Filter(
 # user's own query.
 _CYCLE_IN_QUERY_RE = re.compile(r"\b(20\d{2})[/-](20\d{2})\b")
 
+# Guards the portaria/relatorio rescue (see rag_stream) against the Passo 5
+# regression pattern re-appearing through the cross-encoder (investigated in
+# Passo 25/31 — Q01/Q16): portarias that designate committee members name the
+# program by full title ("...Comitê ... Programa Institucional de Bolsas de
+# Iniciação Científica..."), which scores deceptively well via the reranker
+# against a purely definitional question — even though a portaria/relatório
+# structurally never states a program's objectives (they designate
+# committees, extend deadlines, or report statistics). Narrowly scoped to
+# "objetivo/foco/o que é <programa>"-style questions, which reliably signal
+# that only the edital itself can be a correct source — unlike the broader
+# portaria/relatorio topic itself, which has no comparably reliable lexical
+# marker (see the rescue's own docstring).
+_GENERIC_PROGRAM_DEFINITION_RE = re.compile(
+    # 150-char window: wide enough to bridge "objetivos ... (PIBIC)" across a
+    # fully spelled-out program name ("Programa Institucional de Bolsas de
+    # Iniciação Científica"), which alone runs ~65 chars.
+    r"\b(objetivos?|foco|finalidade|prop[óo]sito)\b.{0,150}\b(PIBIC(?:-EM)?|PIBITI|ICV)\b"
+    r"|\b(PIBIC(?:-EM)?|PIBITI|ICV)\b.{0,150}\b(objetivos?|foco|finalidade|prop[óo]sito)\b"
+    r"|\bo\s+que\s+[ée]\b.{0,60}\b(PIBIC(?:-EM)?|PIBITI|ICV)\b",
+    re.IGNORECASE,
+)
+
 
 def _effective_cycle(query: str) -> str | None:
     """Derive the active cycle strictly from an explicit mention in the
@@ -1078,18 +1100,28 @@ async def rag_stream(
             # (query, chunk) pair regardless of which pool the chunk came
             # from — so only attempt the rescue when a real reranker is
             # available to arbitrate between the two pools.
-            rescue_points = await _union_search(
-                all_queries, payload_filter=_PORTARIA_RELATORIO_FILTER, rag_cfg=rag_cfg,
-                embedding_provider=embedding_provider, embedding_model=embedding_model,
-            )
-            rescue_points = _cycle_survivors(rescue_points, active_cycle)
-            primary_reranked, rescue_reranked = await asyncio.gather(
-                rerank(reranker_query, primary_points, top_k=rag_cfg.reranker_top_k, score_threshold=rag_cfg.reranker_score_threshold),
-                rerank(reranker_query, rescue_points, top_k=rag_cfg.reranker_top_k, score_threshold=rag_cfg.reranker_score_threshold),
-            )
-            primary_top = max((p.score for p in primary_reranked), default=0.0)
-            rescue_top = max((p.score for p in rescue_reranked), default=0.0)
-            reranked = rescue_reranked if rescue_top > primary_top else primary_reranked
+            if _GENERIC_PROGRAM_DEFINITION_RE.search(query):
+                # "Quais são os objetivos do PIBIC?"-style questions: skip the
+                # rescue attempt outright rather than let the score comparison
+                # decide (see _GENERIC_PROGRAM_DEFINITION_RE docstring — this
+                # is the Q01/Q16 regression from Passo 25/31).
+                reranked = await rerank(
+                    reranker_query, primary_points,
+                    top_k=rag_cfg.reranker_top_k, score_threshold=rag_cfg.reranker_score_threshold,
+                )
+            else:
+                rescue_points = await _union_search(
+                    all_queries, payload_filter=_PORTARIA_RELATORIO_FILTER, rag_cfg=rag_cfg,
+                    embedding_provider=embedding_provider, embedding_model=embedding_model,
+                )
+                rescue_points = _cycle_survivors(rescue_points, active_cycle)
+                primary_reranked, rescue_reranked = await asyncio.gather(
+                    rerank(reranker_query, primary_points, top_k=rag_cfg.reranker_top_k, score_threshold=rag_cfg.reranker_score_threshold),
+                    rerank(reranker_query, rescue_points, top_k=rag_cfg.reranker_top_k, score_threshold=rag_cfg.reranker_score_threshold),
+                )
+                primary_top = max((p.score for p in primary_reranked), default=0.0)
+                rescue_top = max((p.score for p in rescue_reranked), default=0.0)
+                reranked = rescue_reranked if rescue_top > primary_top else primary_reranked
         else:
             # No cross-encoder available to arbitrate — without one, a
             # rescue attempt has no reliable signal (see above) and risks
