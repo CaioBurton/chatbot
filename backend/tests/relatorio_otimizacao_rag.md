@@ -2107,6 +2107,7 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | Passo 26: `hyde_enabled=true` (+ reranker) | 3.900/5 (78.0%) | 4 | 16 | ❌ revertido — net neutro no agregado (120 perguntas: +0.06) mas +4s de latência média; repete o veredicto do Passo 7 original (HyDE net-negativo) |
 | Passo 27: `multiquery_enabled=true` (+ reranker) | 4.053/5 (81.1%) | 3 | 18 | ❌ revertido — quase neutro no original (-0.015), ganho pequeno e parcialmente confundido no ampliado; latência ainda pior que o HyDE (21.14s) |
 | Passo 28: `contextual_compression_enabled=true` (+ reranker) | 3.770/5 (75.4%) | 5 | 18 | ❌ revertido — **pior resultado do ciclo**: −0.298 no original, **−0.453 no ampliado** (destrói os ganhos de portaria/RAA do Passo 25: Q100/Q104/Q116 caem de 5.0→0.0) |
+| **Passo 29: `parent_child_expansion_enabled=true` (+ reranker)** | 3.813/5 (76.3%) | 4 | 17 | ✅ **mantido em produção** — líquido combinado +0.124 (120 perguntas), latência quase de graça; único de 4 flags sem regressão catastrófica |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
@@ -2318,9 +2319,46 @@ Excluídas as 4 cópias mais recentes (2026-07-08) via `DELETE /documents/{id}`,
 
 **Estado da configuração ao final deste passo:** idêntico ao Passo 25 — **único flag ativo é `reranker_enabled=true`**; os demais 4 (`hyde`, `multiquery`, `contextual_compression`, `parent_child_expansion`) permanecem `false`.
 
+## Passo 29 — `parent_child_expansion_enabled = true` (revisão sob reranker ativo)
+
+**Data:** 2026-07-08
+**Motivação:** `parent_child_expansion` foi avaliado no Passo 21 sob condições bem diferentes (sem reranker, corpus menor, `edital_cycle` não retroagido; resultado "quase neutro", nunca formalmente decidido). Revisado agora com `reranker_enabled=true` como base, já que as condições mudaram substancialmente.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 29 (+parent_child)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.068/5 (81.4%) | **3.813/5 (76.3%)** | −0.255 |
+| Ruins (< 2.5) | 3/30 | 4/30 | +1 |
+| Excelentes (≥ 4.5) | 20/30 | 17/30 | −3 |
+| Tempo médio de resposta | 14.74 s | 14.85 s | +0.11 s (neutro) |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 29 (+parent_child)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.553/5 (71.1%) | **3.803/5 (76.1%)** | **+0.250** |
+| Ruins (< 2.5) | 17/90 | **11/90** | **−6** |
+| Excelentes (≥ 4.5) | 43/90 | 43/90 | 0 |
+| Tempo médio de resposta | 12.25 s | 12.27 s | +0.02 s (neutro) |
+
+**Líquido combinado (120 perguntas): +0.124** — o único dos 4 flags revisados nesta rodada (junto com HyDE, multiquery, contextual_compression) com ganho real e sem regressão catastrófica. Latência praticamente inalterada nos dois golden-sets: `parent_child_expansion` é uma operação local em Python sobre payloads já recuperados (`expand_to_parents()`), sem chamada extra de API — ao contrário dos outros 3 flags, que envolvem uma chamada de LLM (HyDE, multiquery) ou reprocessamento de texto via LLM (contextual compression) por turno.
+
+**Análise:** ganhos reais no ampliado (não confundidos pelo upload da Resolução 345/2022): Q41 (+4.5), Q77 (+2.5), Q39 (+2.3), Q43 (+1.1), Q113 (+1.0), Q73 (+0.7). Nenhuma regressão maior que −0.5 em nenhum dos dois golden-sets — ausência total do padrão catastrófico visto nos Passos 26-28. A única queda notável é **Q06 (−4.3)** no original — a mesma magnitude quase exata observada nos Passos 26, 27 e 28 (HyDE, multiquery, contextual compression respectivamente), confirmando que Q06 é frágil a **qualquer** técnica adicionada em cima do reranker-sozinho, não um problema específico do parent_child_expansion. Candidato a investigação dedicada futura (padrão análogo à investigação Q01/Q16 do Passo 25).
+
+**Decisão:** mantido — `parent_child_expansion_enabled=true`.
+
+**Estado da configuração ao final deste passo:** `reranker_enabled=true` **e** `parent_child_expansion_enabled=true`; `hyde`, `multiquery`, `contextual_compression` permanecem `false`.
+
+---
+
 ### Fechamento do ciclo de reabilitação gradual (2026-07-08)
 
-Dos 5 flags do `rag_config`, apenas `reranker_enabled=true` (Passo 25) se provou net-positivo o suficiente para manter em produção (+0.751 no ampliado, aceitando a regressão pontual e já investigada de Q01/Q16). `parent_child_expansion` já tinha sido avaliado antes desta sessão (Passo 21, "quase neutro", nunca formalmente decidido — fica como possível revisão futura, já que as condições mudaram bastante desde então: corpus maior, `edital_cycle` retroagido, reranker agora ativo). Os outros 3 (`hyde`, `multiquery`, `contextual_compression`) foram testados nesta sessão e revertidos por custo/benefício ruim. Configuração final de produção: **só o reranker ligado**.
+Dos 5 flags do `rag_config`, dois se provaram net-positivos o suficiente para manter em produção: **`reranker_enabled=true`** (Passo 25, +0.751 no ampliado, aceitando a regressão pontual e já investigada de Q01/Q16) e **`parent_child_expansion_enabled=true`** (Passo 29, revisado sob reranker ativo — condições bem diferentes do Passo 21 original, que tinha sido "quase neutro" sem reranker). Os outros 3 (`hyde`, `multiquery`, `contextual_compression`) foram testados nesta sessão e revertidos por custo/benefício ruim — os três compartilham a característica de reprocessar/expandir via LLM, ao contrário do parent_child_expansion que é puramente local. **Configuração final de produção: reranker + parent_child_expansion ligados; os outros 3 desligados.**
+
+Pendência identificada mas não resolvida: **Q06 quebra de forma consistente (~−4.3) toda vez que qualquer técnica é adicionada em cima do reranker-sozinho** (4/4 nos testes desta sessão) — candidato a investigação dedicada futura, mesmo padrão de tratamento que Q01/Q16 receberam no Passo 25.
 
 ---
 
