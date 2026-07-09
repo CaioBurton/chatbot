@@ -447,13 +447,18 @@ Consulta do usuário
         │
         ▼
 9. Montagem do prompt + Streaming LLM
-   Template com CONTEXTO DOS DOCUMENTOS + HISTÓRICO + 6 REGRAS:
+   Template com CONTEXTO DOS DOCUMENTOS + 9 REGRAS (histórico entra como
+   turnos role: user/assistant separados no array de mensagens, não no
+   template — evita duplicar o mesmo histórico duas vezes no prompt):
    1. Responder EXCLUSIVAMENTE com base nos documentos
    2. Fallback se informação não estiver nos documentos
    3. Nunca inventar datas, normas ou valores
    4. Tom institucional, respeitoso e acessível
    5. Datas com dia, mês e ano completos
    6. Vigência de bolsas: duração em meses + início + término
+   7. Citar aditivo/SIGAA explicitamente quando presentes no contexto
+   8. Sem frases de preenchimento ("de acordo com o documento...")
+   9. Não mencionar a numeração [1]/[2] do contexto na resposta
    Streaming via Ollama /api/chat ou API externa (SSE: token, sources, done)
         │
         ▼

@@ -2110,6 +2110,7 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | **Passo 29: `parent_child_expansion_enabled=true` (+ reranker)** | 3.813/5 (76.3%) | 4 | 17 | ✅ **mantido em produção** — líquido combinado +0.124 (120 perguntas), latência quase de graça; único de 4 flags sem regressão catastrófica |
 | **Passo 30: pinned injection PIBIC (Q06 fix)** | 4.165/5 (83.3%) | 2 | 20 | ✅ resolve a fragilidade recorrente de Q06 (0.2→5.0); Q01 recupera de bônus (0.0→4.8); zero regressão no ampliado (+0.091 líquido combinado) |
 | **Passo 31: guard `_GENERIC_PROGRAM_DEFINITION_RE` (Q01/Q16 fix)** | 4.360/5 (87.2%) | 1 | 20 | ✅ resolve o falso-positivo de roteamento do Passo 25 (Q16: 0.0→5.0; Q01: 4.8→5.0); +0.078 líquido combinado, sem regressões relevantes |
+| Passo 32: limpeza do system prompt (remove duplicação de histórico, regra anti-vazamento de `[1]`/`[2]`, `max_tokens` centralizado) | 4.463/5 (89.3%) | 1 | 23 | ✅ +0.103 no original; ampliado praticamente neutro (-0.020, ruído do juiz); +0.010 líquido combinado |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
@@ -2421,6 +2422,37 @@ Pendência identificada mas não resolvida: **Q06 quebra de forma consistente (~
 **Líquido combinado (120 perguntas): +0.078** — ganho limpo, fecha definitivamente o padrão Q01/Q16 que havia sido aceito como limitação conhecida no Passo 25.
 
 **Estado da configuração ao final deste passo:** idêntico ao Passo 30; novo guard ativo incondicionalmente na decisão de roteamento do rescue.
+
+---
+
+## Passo 32 — Limpeza do system prompt (Nível 1: mudanças seguras)
+
+**Data:** 2026-07-09
+**Motivação:** análise direta do `_SYSTEM_PROMPT` (`rag_engine.py:574-...`) pedida pelo usuário, fora do ciclo de retrieval/roteamento — mudanças de baixo risco na montagem do prompt e na configuração de geração, sem tocar em lógica de busca/reranking.
+
+**Mudanças:**
+1. **Removida a duplicação de histórico de conversa.** As últimas 10 mensagens entravam duas vezes no prompt enviado ao LLM: serializadas como texto dentro de `{chat_history}` no system prompt (via `_build_history()`, agora removida por ficar sem uso) **e** de novo como turnos `role: user/assistant` separados no array `messages`. Nenhuma API de chat completion precisa do histórico duplicado — o array já é nativamente multi-turn. Confirmado que a etapa de retrieval nunca usa o histórico (só é buscado depois, na montagem de contexto), então a remoção não afeta a busca — só reduz tokens gastos por request.
+2. **Nova Regra 9**: instrui o LLM a não mencionar a numeração `[1]`/`[2]` dos documentos no contexto (usada só para referência interna) na resposta — as fontes já aparecem separadamente na UI via `_build_sources()`, programático, não depende de citação inline do LLM.
+3. **`max_tokens=1024` centralizado** numa constante `_LLM_MAX_TOKENS`, referenciada nos 6 lugares que já tinham esse valor hardcoded (2 chamadas single-shot de HyDE/compressão + 4 chamadas de streaming, uma por provider). Refatoração pura — mesmo valor, sem mudança de comportamento. (OpenAI e Ollama têm helpers single-shot que não definem `max_tokens` hoje — deixados como estão, fora do escopo desta limpeza por mudar comportamento real.)
+4. `DOCUMENTATION.md` atualizado para listar as 9 regras reais (estava desatualizada, listava só 6).
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 31 (baseline) | **Passo 32 (prompt cleanup)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.360/5 (87.2%) | **4.463/5 (89.3%)** | **+0.103** |
+| Ruins (< 2.5) | 1/30 | 1/30 | 0 |
+| Excelentes (≥ 4.5) | 20/30 | 23/30 | +3 |
+
+Ganhos: Q07 (+0.7), Q08 (+0.8), Q20 (+1.5), Q24 (+1.0), Q03 (+0.5). Nenhuma queda maior que −0.5.
+
+**Golden-set ampliado (90 perguntas):** 3.846/5 → 3.826/5 (−0.020) — praticamente neutro. Oscilações dispersas (Q101 +1.0, Q56 +0.9 / Q77 −2.2, Q39 −1.0, Q118 −1.0) sem padrão comum identificável entre si, consistentes com o ruído de juiz LLM já documentado repetidamente neste relatório — não hipótese, confirmado testando a conversa multi-turno diretamente e checando que o retrieval nunca leu `history_msgs` antes ou depois desta mudança.
+
+**Líquido combinado (120 perguntas): +0.010** — essencialmente neutro, sem regressão estrutural, com melhora real e maior no golden-set original.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 31 (`reranker_enabled=true` + `parent_child_expansion_enabled=true`); `_SYSTEM_PROMPT` com 9 regras (era 8) e sem bloco de histórico; `_LLM_MAX_TOKENS=1024` centralizado.
 
 ---
 

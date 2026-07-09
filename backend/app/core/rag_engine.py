@@ -283,6 +283,11 @@ logger = logging.getLogger(__name__)
 
 _LOCAL_MODEL = "gemma3:12b"
 
+# Output length cap shared by every provider call (HyDE/multiquery/compression
+# single-shot helpers and the final streaming response) — previously hardcoded
+# separately in each of the 6 call sites below.
+_LLM_MAX_TOKENS = 1024
+
 # Serialise all Ollama inference calls to prevent concurrent GPU pressure.
 # gemma3:12b fills most of the 16 GB VRAM on the RTX 5060 Ti; running two or
 # more inferences simultaneously triggers the OOM killer
@@ -595,12 +600,12 @@ Se o contexto indicar que o envio de relatórios nos editais de iniciação cien
 ao descrever prazos de envio de qualquer relatório (parcial, semestral ou final).
 8. Não use frases de preenchimento como "este documento fala sobre...", "de acordo com o \
 documento em minha base de dados..." ou "com base no contexto apresentado...". Vá direto ao conteúdo da resposta.
+9. Os números entre colchetes (ex: "[1]", "[2]") antes de cada documento no contexto são \
+apenas para sua referência interna — nunca os mencione na resposta. Refira-se aos documentos \
+pelo nome (ex: "conforme o Edital PIBIC 2025/2026...").
 
 CONTEXTO DOS DOCUMENTOS:
-{context}
-
-HISTÓRICO DA CONVERSA:
-{chat_history}\
+{context}\
 """
 
 
@@ -693,7 +698,7 @@ async def _anthropic_generate(prompt: str, temperature: float, settings, model: 
             },
             json={
                 "model": model,
-                "max_tokens": 1024,
+                "max_tokens": _LLM_MAX_TOKENS,
                 "temperature": temperature,
                 "messages": [{"role": "user", "content": prompt}],
             },
@@ -710,7 +715,7 @@ async def _gemini_generate(prompt: str, temperature: float, settings, model: str
             params={"key": settings.GOOGLE_API_KEY},
             json={
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": temperature, "maxOutputTokens": 1024},
+                "generationConfig": {"temperature": temperature, "maxOutputTokens": _LLM_MAX_TOKENS},
             },
         )
         resp.raise_for_status()
@@ -776,18 +781,6 @@ def _build_context(parents: list[dict]) -> str:
         header = f"[{i}] {source}" + (f" (p. {page})" if page else "")
         parts.append(f"{header}\n{text}")
     return "\n\n".join(parts)
-
-
-def _build_history(messages: list[ChatMessage]) -> str:
-    if not messages:
-        return "(sem histórico)"
-    parts = []
-    for msg in messages:
-        role_label = "Usuário" if msg.role == "user" else "Assistente"
-        # Truncate each message to avoid context-window overflow from long turns
-        text = msg.content[:500]
-        parts.append(f"{role_label}: {text}")
-    return "\n".join(parts)
 
 
 async def _compress_context(
@@ -1471,11 +1464,7 @@ async def rag_stream(
         # ------------------------------------------------------------------ #
         stage_start = time.perf_counter()
         context_text = _build_context(reranked_parents)
-        chat_history_text = _build_history(history_msgs)
-        system_content = _SYSTEM_PROMPT.format(
-            context=context_text,
-            chat_history=chat_history_text,
-        )
+        system_content = _SYSTEM_PROMPT.format(context=context_text)
 
         messages: list[dict] = [{"role": "system", "content": system_content}]
         for msg in history_msgs:
@@ -1498,7 +1487,7 @@ async def rag_stream(
                         "messages": messages,
                         "stream": True,
                         "temperature": 0.1,
-                        "max_tokens": 1024,
+                        "max_tokens": _LLM_MAX_TOKENS,
                     },
                 ) as resp:
                     resp.raise_for_status()
@@ -1538,7 +1527,7 @@ async def rag_stream(
                         "system": anthropic_system,
                         "messages": anthropic_messages,
                         "stream": True,
-                        "max_tokens": 1024,
+                        "max_tokens": _LLM_MAX_TOKENS,
                         "temperature": 0.1,
                     },
                 ) as resp:
@@ -1578,7 +1567,7 @@ async def rag_stream(
                     params={"key": settings.GOOGLE_API_KEY, "alt": "sse"},
                     json={
                         "contents": gemini_contents,
-                        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024},
+                        "generationConfig": {"temperature": 0.1, "maxOutputTokens": _LLM_MAX_TOKENS},
                     },
                 ) as resp:
                     resp.raise_for_status()
@@ -1611,7 +1600,7 @@ async def rag_stream(
                             "model": llm_model,
                             "messages": messages,
                             "stream": True,
-                            "options": {"temperature": 0.1, "num_predict": 1024},
+                            "options": {"temperature": 0.1, "num_predict": _LLM_MAX_TOKENS},
                         },
                     ) as resp:
                         resp.raise_for_status()
