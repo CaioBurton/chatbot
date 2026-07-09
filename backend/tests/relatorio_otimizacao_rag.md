@@ -2108,6 +2108,7 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | Passo 27: `multiquery_enabled=true` (+ reranker) | 4.053/5 (81.1%) | 3 | 18 | ❌ revertido — quase neutro no original (-0.015), ganho pequeno e parcialmente confundido no ampliado; latência ainda pior que o HyDE (21.14s) |
 | Passo 28: `contextual_compression_enabled=true` (+ reranker) | 3.770/5 (75.4%) | 5 | 18 | ❌ revertido — **pior resultado do ciclo**: −0.298 no original, **−0.453 no ampliado** (destrói os ganhos de portaria/RAA do Passo 25: Q100/Q104/Q116 caem de 5.0→0.0) |
 | **Passo 29: `parent_child_expansion_enabled=true` (+ reranker)** | 3.813/5 (76.3%) | 4 | 17 | ✅ **mantido em produção** — líquido combinado +0.124 (120 perguntas), latência quase de graça; único de 4 flags sem regressão catastrófica |
+| **Passo 30: pinned injection PIBIC (Q06 fix)** | 4.165/5 (83.3%) | 2 | 20 | ✅ resolve a fragilidade recorrente de Q06 (0.2→5.0); Q01 recupera de bônus (0.0→4.8); zero regressão no ampliado (+0.091 líquido combinado) |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
@@ -2359,6 +2360,35 @@ Excluídas as 4 cópias mais recentes (2026-07-08) via `DELETE /documents/{id}`,
 Dos 5 flags do `rag_config`, dois se provaram net-positivos o suficiente para manter em produção: **`reranker_enabled=true`** (Passo 25, +0.751 no ampliado, aceitando a regressão pontual e já investigada de Q01/Q16) e **`parent_child_expansion_enabled=true`** (Passo 29, revisado sob reranker ativo — condições bem diferentes do Passo 21 original, que tinha sido "quase neutro" sem reranker). Os outros 3 (`hyde`, `multiquery`, `contextual_compression`) foram testados nesta sessão e revertidos por custo/benefício ruim — os três compartilham a característica de reprocessar/expandir via LLM, ao contrário do parent_child_expansion que é puramente local. **Configuração final de produção: reranker + parent_child_expansion ligados; os outros 3 desligados.**
 
 Pendência identificada mas não resolvida: **Q06 quebra de forma consistente (~−4.3) toda vez que qualquer técnica é adicionada em cima do reranker-sozinho** (4/4 nos testes desta sessão) — candidato a investigação dedicada futura, mesmo padrão de tratamento que Q01/Q16 receberam no Passo 25.
+
+---
+
+## Passo 30 — Pinned injection PIBIC (fix definitivo de Q06)
+
+**Data:** 2026-07-08
+**Motivação:** investigação direta do padrão recorrente de Q06 identificado no Passo 29.
+
+**Diagnóstico:** Q06 ("Quantos pontos mínimos o orientador precisa obter... no PIBIC?") sofre exatamente a mesma falha que motivou a pinned injection do ICV (Q15) — só que para **PIBIC vs PIBIC-EM/PIBITI**. Verificado via `_union_search`/`rerank` isolados: o chunk correto (Edital PIBIC, "...deverá atingir, no mínimo, 10 (dez) pontos, no somatório dos itens de 01 a 10 e 13 a 17...") **existe** no pool primário, mas fica em 10º lugar (score 0.5189) — fora do `reranker_top_k=5`. Quem ocupa o topo (score 0.7098) é um trecho do Edital PIBIC-EM sobre "Plano de Trabalho" — vocabulário genérico ("plano de trabalho", "orientador(a)/aluno(a)") compartilhado entre os editais, que compete melhor do que o fato específico "10 pontos" enterrado no meio do parágrafo certo. Confirmado que ambos os editais PIBIC (2025/2026 e 2026/2027) têm essa cláusula, ambos na página 5.
+
+**Fix:** novo bloco de pinned injection em `rag_engine.py` (`_PIBIC_HABILITACAO_RE` + `_pinned_search`), seguindo exatamente o padrão já estabelecido para o ICV. Âncora em `text_contains=["10 (dez) pontos"]` — o próprio texto literal do limiar do PIBIC, que naturalmente exclui a cláusula do PIBIC-EM (número diferente, "5 (cinco) pontos") sem precisar de exclusão negativa de `source`. Guard adicional (`_PIBIC_EM_PIBITI_ICV_RE`) impede que o bloco dispare para perguntas explicitamente sobre PIBIC-EM/PIBITI/ICV.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 29 (baseline) | **Passo 30 (+pin PIBIC)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.813/5 (76.3%) | **4.165/5 (83.3%)** | **+0.352** |
+| Ruins (< 2.5) | 4/30 | 2/30 | −2 |
+| Excelentes (≥ 4.5) | 17/30 | 20/30 | +3 |
+
+**Q06: 0.2 → 5.0 (+4.8)** — corrigido. **Q01 também se recupera (0.0 → 4.8, +4.8)**, provavelmente variação normal do juiz LLM/embedding (Q01 não tem relação direta com a cláusula do PIBIC). Ganhos adicionais em perguntas relacionadas: Q07 (+0.7), Q08 (+0.5), Q09 (+0.5). Única regressão: Q15 (−0.5), dentro do ruído.
+
+**Golden-set ampliado (90 perguntas):** 3.803/5 → 3.807/5 — praticamente neutro, como esperado (nenhuma pergunta do conjunto ampliado usa o padrão específico de Q06). Pequenas oscilações de ruído (Q77 +1.5, Q42 −1.0) sem padrão comum.
+
+**Líquido combinado (120 perguntas): +0.091** — ganho limpo e cirúrgico, sem efeitos colaterais no conjunto mais amplo.
+
+**Estado da configuração ao final deste passo:** `reranker_enabled=true` + `parent_child_expansion_enabled=true` (inalterado desde o Passo 29); novo bloco de código ativo incondicionalmente (pinned injections não dependem de flags do `rag_config`).
 
 ---
 

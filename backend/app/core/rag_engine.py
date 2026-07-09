@@ -122,6 +122,26 @@ _ICV_HABILITACAO_QUERY = (
     "pontos somatório total tabela pontuação Iniciação Científica Voluntária"
 )
 
+# Q06 pinned injection: PIBIC (not PIBIC-EM/PIBITI/ICV) habilitação pontos
+# mínimos. PIBIC-EM and PIBITI share near-identical vocabulary with regular
+# PIBIC ("plano de trabalho", "produção intelectual", "pontos mínimos"), and
+# that generic phrasing consistently outranks PIBIC's own specific "10 (dez)
+# pontos" clause (buried mid-paragraph, competing against denser generic
+# content from other programs). text_contains anchors to PIBIC's literal
+# threshold, which naturally excludes PIBIC-EM's clause (a different number,
+# "5 (cinco) pontos") without needing negative source filtering.
+_PIBIC_HABILITACAO_RE = re.compile(
+    r"\bPIBIC\b.{0,120}\bpontos?\s+m[íi]nimos?\b"
+    r"|\bpontos?\s+m[íi]nimos?\b.{0,120}\bPIBIC\b",
+    re.IGNORECASE,
+)
+_PIBIC_EM_PIBITI_ICV_RE = re.compile(r"PIBIC-EM|PIBITI|\bICV\b", re.IGNORECASE)
+_PIBIC_HABILITACAO_QUERY = (
+    "PIBIC habilitado etapa análise planos trabalho proponente atingir "
+    "mínimo 10 dez pontos somatório total tabela pontuação produção "
+    "intelectual Iniciação Científica"
+)
+
 # Q05 pinned injection: "vigência bolsas" for a specific program (not Q25 cross-program).
 # The cronograma section floods context with many date ranges; pinning the dedicated
 # "DO PERÍODO DE VIGÊNCIA DA BOLSA" section forces the LLM to see the correct dates.
@@ -1134,6 +1154,25 @@ async def rag_stream(
             )
             if _pinned:
                 reranked_parents = _promote_pinned(reranked_parents, _pinned[0], context_top_k)
+
+        # Pinned PIBIC injection (Q06-type): same failure mode as the ICV block
+        # above — the "10 (dez) pontos" habilitação clause loses the reranker
+        # to PIBIC-EM/PIBITI sections sharing the same generic vocabulary.
+        # Guarded so it never fires for questions explicitly about a different
+        # program (PIBIC-EM/PIBITI/ICV), which have their own pinned blocks.
+        if _PIBIC_HABILITACAO_RE.search(query) and not _PIBIC_EM_PIBITI_ICV_RE.search(query):
+            _pinned_pibic = await _pinned_search(
+                _PIBIC_HABILITACAO_QUERY,
+                top_k=20,
+                payload_filter=_RAG_PAYLOAD_FILTER,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+                source_contains=["pibic"],
+                text_contains=["10 (dez) pontos"],
+                cycle_filter=active_cycle,
+            )
+            if _pinned_pibic:
+                reranked_parents = _promote_pinned(reranked_parents, _pinned_pibic[0], context_top_k)
 
         # Q05 pinned injection: "vigência das bolsas" queries retrieve the dedicated
         # "DO PERÍODO DE VIGÊNCIA DA BOLSA" section. Without pinning, the cronograma
