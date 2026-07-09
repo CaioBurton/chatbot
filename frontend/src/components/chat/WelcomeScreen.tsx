@@ -7,7 +7,7 @@ interface Props {
 const SUGGESTIONS = [
   'Quais são os prazos para submissão de projetos de pesquisa?',
   'Como solicito uma bolsa de iniciação científica (PIBIC)?',
-  'Quais editais estão abertos atualmente?',
+  'Quais são os critérios de avaliação dos projetos de iniciação científica?',
   'Como envio o relatório final de um projeto de pesquisa?',
 ]
 
