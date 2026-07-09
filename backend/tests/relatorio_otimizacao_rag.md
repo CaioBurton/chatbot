@@ -2111,6 +2111,7 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | **Passo 30: pinned injection PIBIC (Q06 fix)** | 4.165/5 (83.3%) | 2 | 20 | ✅ resolve a fragilidade recorrente de Q06 (0.2→5.0); Q01 recupera de bônus (0.0→4.8); zero regressão no ampliado (+0.091 líquido combinado) |
 | **Passo 31: guard `_GENERIC_PROGRAM_DEFINITION_RE` (Q01/Q16 fix)** | 4.360/5 (87.2%) | 1 | 20 | ✅ resolve o falso-positivo de roteamento do Passo 25 (Q16: 0.0→5.0; Q01: 4.8→5.0); +0.078 líquido combinado, sem regressões relevantes |
 | Passo 32: limpeza do system prompt (remove duplicação de histórico, regra anti-vazamento de `[1]`/`[2]`, `max_tokens` centralizado) | 4.463/5 (89.3%) | 1 | 23 | ✅ +0.103 no original; ampliado praticamente neutro (-0.020, ruído do juiz); +0.010 líquido combinado |
+| Passo 33: regras 10/11 (resposta parcial + resolução de conflito entre documentos) | 4.413/5 (88.3%) | 1 | 21 | ❌ revertido — ganho líquido pequeno (+0.037) mas alucinação piora em ambos os golden-sets (0.933→0.9 e 0.9→0.878) |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
@@ -2453,6 +2454,45 @@ Ganhos: Q07 (+0.7), Q08 (+0.8), Q20 (+1.5), Q24 (+1.0), Q03 (+0.5). Nenhuma qued
 **Líquido combinado (120 perguntas): +0.010** — essencialmente neutro, sem regressão estrutural, com melhora real e maior no golden-set original.
 
 **Estado da configuração ao final deste passo:** idêntico ao Passo 31 (`reranker_enabled=true` + `parent_child_expansion_enabled=true`); `_SYSTEM_PROMPT` com 9 regras (era 8) e sem bloco de histórico; `_LLM_MAX_TOKENS=1024` centralizado.
+
+---
+
+## Passo 33 — Regras 10/11 do system prompt: resposta parcial + resolução de conflito (Nível 2, revertido)
+
+**Data:** 2026-07-09
+**Motivação:** item de Nível 2 identificado na análise do Passo 32 — tensão observada nesta sessão (Q88, Q98) entre a Regra 1-3 ("responder exclusivamente com base no contexto", fallback obrigatório) e casos em que o contexto tem informação relacionada mas não afirma o detalhe exato pedido. Testado com a mesma metodologia rigorosa de todo o resto do relatório (full eval nos dois golden-sets, decisão baseada em dados).
+
+**Mudança testada:** duas regras novas, redigidas condicionalmente (seguindo a lição de design já registrada neste relatório — regras que dependem de informação possivelmente ausente devem ser condicionais, nunca "sempre faça X"):
+- **Regra 10**: permite uma resposta parcial com a limitação explicitada, em vez de recusa total, quando o contexto menciona o assunto mas não afirma todos os detalhes — mantendo a Regra 3 (nunca inventar) como restrição superior.
+- **Regra 11**: em caso de documentos conflitantes sobre a mesma regra/prazo (fora do caso já coberto pela Regra 7, aditivo), considerar o mais recente como vigente.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 32 (baseline) | **Passo 33 (+Regras 10/11)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.463/5 (89.3%) | 4.413/5 (88.3%) | −0.050 |
+| Sem alucinação | 0.933 | **0.900** | **−0.033** |
+| Ruins (< 2.5) | 1/30 | 1/30 | 0 |
+| Excelentes (≥ 4.5) | 23/30 | 21/30 | −2 |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 32 (baseline) | **Passo 33 (+Regras 10/11)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.826/5 (76.5%) | **3.892/5 (77.8%)** | +0.066 |
+| Sem alucinação | 0.900 | **0.878** | **−0.022** |
+| Ruins (< 2.5) | 13/90 | 12/90 | −1 |
+| Excelentes (≥ 4.5) | 45/90 | 48/90 | +3 |
+
+**Líquido combinado (120 perguntas): +0.037** — positivo na pontuação agregada.
+
+**Análise:** o padrão é consistente nos dois conjuntos — a pontuação geral melhora ligeiramente, mas a métrica de **sem alucinação piora nos dois** (−0.033 no original, −0.022 no ampliado). É exatamente o risco já identificado antes na história deste relatório como motivo para nunca ter tentado afrouxar a Regra 1-3: ganhar completude à custa de confiabilidade. Diferente da maioria dos passos revertidos por regressão pura de pontuação, aqui o trade-off é qualitativo — o ganho é real, mas a métrica que este projeto trata como quase inviolável (alucinação historicamente entre 0.93-0.97 ao longo de todo o relatório) piorou de forma consistente, não por ruído isolado num único caso.
+
+**Decisão:** revertido — Regras 10 e 11 removidas do `_SYSTEM_PROMPT`. Para um assistente institucional, confiabilidade (nunca afirmar algo não certamente suportado pelo contexto) pesa mais que completude marginal.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 32 (`_SYSTEM_PROMPT` de volta a 9 regras).
 
 ---
 
