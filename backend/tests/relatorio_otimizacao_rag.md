@@ -2106,6 +2106,7 @@ UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
 | Passo 25: `reranker_enabled=true` (desbloqueia o rescue do Passo 24) | 4.068/5 (81.4%) | 3 | 20 | ⚠️ ver análise — net positivo forte no ampliado, leve queda no original (Q01/Q16 falsos positivos de roteamento) |
 | Passo 26: `hyde_enabled=true` (+ reranker) | 3.900/5 (78.0%) | 4 | 16 | ❌ revertido — net neutro no agregado (120 perguntas: +0.06) mas +4s de latência média; repete o veredicto do Passo 7 original (HyDE net-negativo) |
 | Passo 27: `multiquery_enabled=true` (+ reranker) | 4.053/5 (81.1%) | 3 | 18 | ❌ revertido — quase neutro no original (-0.015), ganho pequeno e parcialmente confundido no ampliado; latência ainda pior que o HyDE (21.14s) |
+| Passo 28: `contextual_compression_enabled=true` (+ reranker) | 3.770/5 (75.4%) | 5 | 18 | ❌ revertido — **pior resultado do ciclo**: −0.298 no original, **−0.453 no ampliado** (destrói os ganhos de portaria/RAA do Passo 25: Q100/Q104/Q116 caem de 5.0→0.0) |
 
 **Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
 
@@ -2281,6 +2282,45 @@ Excluídas as 4 cópias mais recentes (2026-07-08) via `DELETE /documents/{id}`,
 **Decisão:** revertido — `multiquery_enabled=false`.
 
 **Estado da configuração ao final deste passo:** idêntico ao Passo 25 (`reranker_enabled=true`; demais 4 flags `false`).
+
+---
+
+## Passo 28 — `contextual_compression_enabled = true` (último flag do ciclo de reabilitação gradual)
+
+**Data:** 2026-07-08
+**Motivação:** último dos 5 flags do `rag_config` a ser reavaliado nesta rodada, com `reranker_enabled=true` como base.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 28 (+compression)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.068/5 (81.4%) | **3.770/5 (75.4%)** | **−0.298** |
+| Ruins (< 2.5) | 3/30 | 5/30 | +2 |
+| Excelentes (≥ 4.5) | 20/30 | 18/30 | −2 |
+| Tempo médio de resposta | 14.74 s | 15.75 s | +1.01 s |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 28 (+compression)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.553/5 (71.1%) | **3.100/5 (62.0%)** | **−0.453** |
+| Ruins (< 2.5) | 17/90 | **28/90** | **+11** |
+| Excelentes (≥ 4.5) | 43/90 | 33/90 | −10 |
+| Tempo médio de resposta | 12.25 s | 12.76 s | +0.51 s |
+
+**Líquido combinado (120 perguntas): −0.414** — de longe o pior resultado do ciclo de reabilitação (Passo 26 HyDE: +0.06; Passo 27 multiquery: ~+0.06-0.11 confundido; ambos neutros a levemente positivos). Latência quase não muda (a compressão parece mais barata que HyDE/multiquery em tempo, mas o custo é todo em qualidade).
+
+**Análise — destrói especificamente o ganho do Passo 25:** as maiores quedas do ampliado são exatamente as perguntas de portaria/RAA que o rescue do Passo 24/25 tinha acabado de corrigir — Q100, Q104, Q116 caem de 5.0 para **0.0**; Q70 (4.8→0.0), Q66 (5.0→0.5), Q97 (4.8→0.5), Q109 (4.6→0.5), Q94/Q32 (4.0→0.0). O prompt de compressão contextual (`_COMPRESS_PROMPT_TEMPLATE`) provavelmente foi calibrado para prosa normativa de edital — ao processar o formato bem diferente de portarias (listas de nomes, tabelas, atos administrativos curtos) e RAA (relatórios tabulares/estatísticos), a etapa de compressão aparentemente descarta o trecho com a resposta em vez de extraí-lo. No golden-set original, Q06 (−4.0) e Q24 (−3.0, nova regressão) também sofrem — mesmo padrão de fragilidade a técnicas que reprocessam o texto recuperado via LLM (já visto com HyDE/multiquery em Q54).
+
+**Decisão:** revertido — `contextual_compression_enabled=false`.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 25 — **único flag ativo é `reranker_enabled=true`**; os demais 4 (`hyde`, `multiquery`, `contextual_compression`, `parent_child_expansion`) permanecem `false`.
+
+### Fechamento do ciclo de reabilitação gradual (2026-07-08)
+
+Dos 5 flags do `rag_config`, apenas `reranker_enabled=true` (Passo 25) se provou net-positivo o suficiente para manter em produção (+0.751 no ampliado, aceitando a regressão pontual e já investigada de Q01/Q16). `parent_child_expansion` já tinha sido avaliado antes desta sessão (Passo 21, "quase neutro", nunca formalmente decidido — fica como possível revisão futura, já que as condições mudaram bastante desde então: corpus maior, `edital_cycle` retroagido, reranker agora ativo). Os outros 3 (`hyde`, `multiquery`, `contextual_compression`) foram testados nesta sessão e revertidos por custo/benefício ruim. Configuração final de produção: **só o reranker ligado**.
 
 ---
 
