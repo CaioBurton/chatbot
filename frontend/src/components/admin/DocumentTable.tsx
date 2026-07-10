@@ -3,7 +3,8 @@ import { RefreshCw, Trash2, Pencil, ChevronLeft, ChevronRight, ExternalLink } fr
 import { authFetch, API_BASE, type DocumentListItem } from '../../lib/api'
 import EditMetadataModal from './EditMetadataModal'
 
-const PAGE_SIZE = 20
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
+const DEFAULT_PAGE_SIZE = 20
 
 interface Props {
   refreshKey?: number
@@ -50,24 +51,25 @@ function formatDate(iso: string): string {
 export default function DocumentTable({ refreshKey, onChanged }: Props) {
   const [docs, setDocs] = useState<DocumentListItem[]>([])
   const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
   const [editing, setEditing] = useState<DocumentListItem | null>(null)
 
   const load = useCallback(
-    (pageIndex: number) => {
+    (pageIndex: number, size: number) => {
       setLoading(true)
       setError(false)
-      const skip = pageIndex * PAGE_SIZE
-      authFetch(`${API_BASE}/documents?skip=${skip}&limit=${PAGE_SIZE + 1}`)
+      const skip = pageIndex * size
+      authFetch(`${API_BASE}/documents?skip=${skip}&limit=${size + 1}`)
         .then(res => {
           if (!res.ok) throw new Error('list error')
           return res.json() as Promise<DocumentListItem[]>
         })
         .then(data => {
-          setHasMore(data.length > PAGE_SIZE)
-          setDocs(data.slice(0, PAGE_SIZE))
+          setHasMore(data.length > size)
+          setDocs(data.slice(0, size))
         })
         .catch(() => setError(true))
         .finally(() => setLoading(false))
@@ -77,13 +79,17 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
 
   useEffect(() => {
     setPage(0)
-    load(0)
-  }, [refreshKey, load])
+    load(0, pageSize)
+  }, [refreshKey, load, pageSize])
 
   const changePage = (delta: number) => {
     const next = page + delta
     setPage(next)
-    load(next)
+    load(next, pageSize)
+  }
+
+  const changePageSize = (size: number) => {
+    setPageSize(size)
   }
 
   const handleDelete = (doc: DocumentListItem) => {
@@ -92,7 +98,7 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
       .then(res => {
         if (!res.ok) throw new Error('delete error')
         onChanged()
-        load(page)
+        load(page, pageSize)
       })
       .catch(() => alert('Falha ao excluir documento.'))
   }
@@ -104,7 +110,7 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
       .then(res => {
         if (!res.ok) throw new Error('reindex error')
         onChanged()
-        load(page)
+        load(page, pageSize)
       })
       .catch(() => alert('Falha ao reindexar documento.'))
   }
@@ -125,7 +131,7 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
         if (!res.ok) throw new Error('update error')
         setEditing(null)
         onChanged()
-        load(page)
+        load(page, pageSize)
       })
       .catch(() => alert('Falha ao atualizar classificação do documento.'))
   }
@@ -242,26 +248,41 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
       </div>
 
       {/* Pagination */}
-      <div className="flex items-center gap-3 text-sm text-[#6c7078] dark:text-[#9da2aa]">
-        <button
-          type="button"
-          disabled={page === 0 || loading}
-          onClick={() => changePage(-1)}
-          className="flex cursor-pointer items-center gap-1 rounded-lg border border-[#e6e1d5] dark:border-[#33383f] px-3 py-1 transition-colors hover:bg-[#eae6dc] dark:hover:bg-[#2c313a] disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <ChevronLeft size={14} />
-          Anterior
-        </button>
-        <span>Página {page + 1}</span>
-        <button
-          type="button"
-          disabled={!hasMore || loading}
-          onClick={() => changePage(1)}
-          className="flex cursor-pointer items-center gap-1 rounded-lg border border-[#e6e1d5] dark:border-[#33383f] px-3 py-1 transition-colors hover:bg-[#eae6dc] dark:hover:bg-[#2c313a] disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Próxima
-          <ChevronRight size={14} />
-        </button>
+      <div className="flex items-center justify-between gap-3 text-sm text-[#6c7078] dark:text-[#9da2aa]">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            disabled={page === 0 || loading}
+            onClick={() => changePage(-1)}
+            className="flex cursor-pointer items-center gap-1 rounded-lg border border-[#e6e1d5] dark:border-[#33383f] px-3 py-1 transition-colors hover:bg-[#eae6dc] dark:hover:bg-[#2c313a] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <ChevronLeft size={14} />
+            Anterior
+          </button>
+          <span>Página {page + 1}</span>
+          <button
+            type="button"
+            disabled={!hasMore || loading}
+            onClick={() => changePage(1)}
+            className="flex cursor-pointer items-center gap-1 rounded-lg border border-[#e6e1d5] dark:border-[#33383f] px-3 py-1 transition-colors hover:bg-[#eae6dc] dark:hover:bg-[#2c313a] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Próxima
+            <ChevronRight size={14} />
+          </button>
+        </div>
+        <label className="flex items-center gap-2">
+          Itens por página
+          <select
+            value={pageSize}
+            disabled={loading}
+            onChange={e => changePageSize(Number(e.target.value))}
+            className="rounded-lg border border-[#e6e1d5] dark:border-[#33383f] bg-[#fdfcfa] dark:bg-[#16181c] px-2 py-1 text-sm text-[#1e2128] dark:text-[#eceae7] outline-none focus:border-[#2c4a86] dark:focus:border-[#8596b9] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {PAGE_SIZE_OPTIONS.map(size => (
+              <option key={size} value={size}>{size}</option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {editing && (
