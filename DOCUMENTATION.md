@@ -42,7 +42,7 @@ O sistema permite que usuários da UFPI façam perguntas em linguagem natural so
 - Painel administrativo protegido por JWT para upload, gestão e reindexação de documentos
 - Pipeline RAG avançado com 9 estágios: normalização, HyDE, multi-query, busca híbrida RRF, injeções lexicais e pinadas, reranking, expansão edital_ref, compressão contextual e streaming LLM
 - Suporte a LLM local (Ollama/gemma3:12b) e externo (Gemini, OpenAI, Anthropic) — alternável em runtime pelo painel admin
-- Suporte a PDFs nativos e digitalizados (OCR via Tesseract + OpenCV)
+- Suporte a PDFs nativos e digitalizados (OCR via API cloud LLMWhisperer)
 - Vinculação de aditivos ao edital de referência (`edital_ref`) com expansão bidirecional de contexto no RAG
 
 ---
@@ -86,7 +86,7 @@ O sistema permite que usuários da UFPI façam perguntas em linguagem natural so
      ┌──────────────▼──────────────────────────────────────┐
      │             Pipeline de Ingestão de Documentos      │
      │  PDF nativo  →  pdfplumber / pypdf                   │
-     │  PDF scan    →  OpenCV + Tesseract OCR               │
+     │  PDF scan    →  LLMWhisperer OCR (API cloud)         │
      │  Chunking    →  Parent-Child (tiktoken cl100k_base)  │
      │  Payload     →  doc_type + edital_ref por chunk      │
      │  Embeddings  →  bge-m3 via Ollama (batches de 32)    │
@@ -120,7 +120,7 @@ O sistema permite que usuários da UFPI façam perguntas em linguagem natural so
 | Modelo de embeddings | BAAI/bge-m3 (Ollama) | 1024 dims |
 | Encoder esparso | fastembed BM42 | ≥ 0.3 |
 | Reranker | BAAI/bge-reranker-v2-m3 (sentence-transformers) | — |
-| OCR | Tesseract 5 + OpenCV | — |
+| OCR | LLMWhisperer (API cloud, Unstract) | — |
 | Tokenizer | tiktoken (cl100k_base) | ≥ 0.6 |
 | Autenticação | JWT (python-jose) + bcrypt | — |
 | Avaliação RAG | RAGAS | ≥ 0.1 |
@@ -132,8 +132,7 @@ O sistema permite que usuários da UFPI façam perguntas em linguagem natural so
 
 ```
 chatbot/
-├── docker-compose.yml          # Stack completo com GPU habilitada por padrão
-├── docker-compose.gpu.yml      # Overlay para count: all (multi-GPU)
+├── docker-compose.aws.yml      # Único compose file nesta branch (modo cloud/AWS, sem Ollama/GPU)
 ├── README.md                   # Guia de início rápido e visão geral
 ├── CLAUDE.md                   # Instruções para Claude Code
 ├── AGENTS.md                   # Convenções de arquitetura para agentes
@@ -179,7 +178,7 @@ chatbot/
 │       │   ├── sparse.py       # Encoder esparso BM42 via fastembed
 │       │   └── extractors/
 │       │       ├── pdf.py      # Extração nativa (pdfplumber/pypdf)
-│       │       └── ocr.py      # OCR com OpenCV + Tesseract
+│       │       └── ocr.py      # OCR via API cloud LLMWhisperer
 │       ├── models/             # SQLAlchemy ORM models
 │       └── schemas/            # Pydantic request/response schemas
 │
@@ -287,9 +286,10 @@ Esses parâmetros são lidos a cada requisição via `get_rag_config(db)` e alte
 | `GET` | `/documents` | Lista documentos com paginação | Admin |
 | `GET` | `/documents/stats` | Totais: documentos, chunks, erros | Admin |
 | `GET` | `/documents/{id}` | Detalhes de um documento | Admin |
+| `PATCH` | `/documents/{id}` | Corrige `doc_type`/`edital_ref`/`edital_cycle` de um documento já indexado; purga os chunks antigos no Qdrant/Postgres e reagenda a ingestão | Admin |
 | `DELETE` | `/documents/{id}` | Remove do PostgreSQL e Qdrant | Admin |
 | `POST` | `/documents/{id}/reindex` | Reprocessa documento com erro | Admin |
-| `POST` | `/documents/reindex` | Reindexação total ou parcial (`scope: "all"\|"pending"`) | Admin |
+| `POST` | `/documents/reindex-all` | Reindexação total ou parcial (`scope: "all"\|"pending"`) | Admin |
 | `POST` | `/documents/search` | Busca híbrida com reranking opcional | Admin |
 | `POST` | `/documents/search/expanded` | Busca com expansão para chunks pai | Admin |
 
@@ -302,6 +302,7 @@ Esses parâmetros são lidos a cada requisição via `get_rag_config(db)` e alte
 | `source_url` | string (opcional) | Link externo para o documento original |
 | `doc_type` | string | `edital`, `aditivo`, `resolucao`, `tutorial`, `portaria`, `relatorio` |
 | `edital_ref` | string (opcional) | Para aditivos: nome do edital de referência (ativa expansão bidirecional no RAG) |
+| `edital_cycle` | string (opcional) | Ciclo do edital (ex.: `"2025/2026"`). Usado para excluir o documento do contexto quando o admin define um `active_edital_cycle` diferente em `rag_config` — documentos com `edital_cycle=null` permanecem elegíveis em qualquer ciclo |
 
 **Validações de segurança no upload:**
 - `Content-Type: application/pdf` (MIME allowlist)
@@ -446,13 +447,18 @@ Consulta do usuário
         │
         ▼
 9. Montagem do prompt + Streaming LLM
-   Template com CONTEXTO DOS DOCUMENTOS + HISTÓRICO + 6 REGRAS:
+   Template com CONTEXTO DOS DOCUMENTOS + 9 REGRAS (histórico entra como
+   turnos role: user/assistant separados no array de mensagens, não no
+   template — evita duplicar o mesmo histórico duas vezes no prompt):
    1. Responder EXCLUSIVAMENTE com base nos documentos
    2. Fallback se informação não estiver nos documentos
    3. Nunca inventar datas, normas ou valores
    4. Tom institucional, respeitoso e acessível
    5. Datas com dia, mês e ano completos
    6. Vigência de bolsas: duração em meses + início + término
+   7. Citar aditivo/SIGAA explicitamente quando presentes no contexto
+   8. Sem frases de preenchimento ("de acordo com o documento...")
+   9. Não mencionar a numeração [1]/[2] do contexto na resposta
    Streaming via Ollama /api/chat ou API externa (SSE: token, sources, done)
         │
         ▼
@@ -494,7 +500,7 @@ uploaded → processing → error   (falha)
 
 **Etapas:**
 
-1. **Extração de texto** — tenta extração nativa (`pdfplumber`/`pypdf`). Se o PDF for digitalizado (pouco texto extraído), executa OCR com OpenCV + Tesseract
+1. **Extração de texto** — tenta extração nativa (`pdfplumber`/`pypdf`). Se o PDF for digitalizado (pouco texto extraído), envia para OCR via API cloud LLMWhisperer
 2. **Resolução de display_name** — usa título extraído do PDF, metadado `Title`, ou nome do arquivo original (nessa ordem de preferência)
 3. **Chunking hierárquico** (`app/ingestion/chunker.py`) — divide o texto em chunks pai (512 tokens) e filho (128 tokens) usando tiktoken `cl100k_base`. Tamanhos configuráveis via `rag_config`
 4. **Embedding denso** — chamadas em batch ao Ollama `/api/embed` com `bge-m3` (batch de 32)
@@ -565,9 +571,13 @@ Resultados são armazenados na tabela `rag_evaluations`.
 
 **Harness de avaliação offline (`backend/tests/run_groundtruth_eval.py`):**
 
-Avalia o pipeline contra 30 perguntas com gabarito (`backend/tests/groundtruth_chatbot_rag.csv`) usando `gemini-3.1-flash-lite` como LLM judge (free tier, 15 RPM). Cada pergunta consome ~5 chamadas Gemini (HyDE + multi-query + geração + judge + margem). O script gerencia rate limiting automaticamente com intervalo mínimo de 35 s/pergunta.
+Avalia o pipeline contra dois ground truths — o original de 30 perguntas (`backend/tests/groundtruth_chatbot_rag.csv`) e um conjunto ampliado de 90 perguntas adicionais (`backend/tests/groundtruth_chatbot_rag_ampliado.csv`, introduzido no Passo 25 para reduzir o risco de overfitting às 30 perguntas originais) — usando `gemini-3.1-flash-lite` como LLM judge (free tier, 15 RPM). Cada pergunta consome ~5 chamadas Gemini (HyDE + multi-query + geração + judge + margem). O script gerencia rate limiting automaticamente com intervalo mínimo de 35 s/pergunta. Desde o Passo 25, toda decisão de manter/reverter uma mudança é validada nos dois conjuntos (120 perguntas combinadas).
 
-Melhor resultado obtido: **4.620/5 (92.4%)** — Passo 14, com gemini-3.1-flash-lite como LLM do pipeline e judge.
+**Melhor resultado no set original (embeddings locais bge-m3):** 4.620/5 (92.4%) — Passo 14. Esse recorde não é mais alcançável no pipeline atual: a migração de `embedding_provider` para Gemini (necessária para o deploy cloud/AWS) anulou quase todo o ganho acumulado dos 17 passos iniciais, forçando um novo baseline no Passo 20 (4.073/5) sob embeddings 100% Gemini.
+
+**Estado de produção atual** (configuração do Passo 32 — o Passo 33 foi testado e revertido por regressão na métrica de ausência de alucinação):
+- Golden-set original (30 perguntas): **4.463/5 (89.3%)**
+- Golden-set ampliado (90 perguntas): **3.826/5 (76.5%)**
 
 ---
 
@@ -842,41 +852,48 @@ Os scripts em `init/` são executados pelo container do PostgreSQL na **primeira
 2. `01_schema.sql` — cria tabelas, índices, extensões, trigger e seeds do `rag_config`. Todas as operações são idempotentes via `CREATE ... IF NOT EXISTS` e `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
 3. `02_seed_admin.sh` — insere o primeiro usuário admin (e-mail e senha de `ADMIN_EMAIL`/`ADMIN_PASSWORD`). Idempotente: não cria duplicata se já existir
 
-### GPU habilitada por padrão
+### Modo cloud/AWS (sem Ollama, sem GPU)
+
+Esta branch roda exclusivamente neste modo — `docker-compose.yml` e
+`docker-compose.gpu.yml` (variantes local/híbrido com Ollama e GPU) foram
+removidos. O único compose file é `docker-compose.aws.yml` (build do backend
+via `backend/Dockerfile.cloud`, que instala PyTorch CPU-only para o
+reranker). O LLM e os embeddings densos são servidos inteiramente pela API
+do Gemini (`GOOGLE_API_KEY`); reranker (`bge-reranker-v2-m3`) e o encoder
+esparso BM42 continuam rodando localmente, mas em CPU.
 
 ```bash
-# Pré-requisito: nvidia-container-toolkit instalado e configurado
-docker compose up -d
+cp .env.aws.example .env   # preencher GOOGLE_API_KEY e demais segredos
+docker compose -f docker-compose.aws.yml up -d
 ```
 
-O `docker-compose.yml` já inclui `deploy.resources.reservations` para GPU em `backend` e `ollama`. Para usar todas as GPUs disponíveis em hardware multi-GPU:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-```
+Guia completo de provisionamento (tipo de instância, security group, TLS) em
+`deploy/aws/README.md`.
 
 ### Rebuild após mudanças de código
 
 ```bash
 # Após editar arquivos Python do backend
-docker compose build backend && docker compose up -d backend
+docker compose -f docker-compose.aws.yml build backend && docker compose -f docker-compose.aws.yml up -d backend
 
 # Após editar React/TypeScript do frontend
-docker compose build frontend && docker compose up -d frontend
-```
-
-### Baixar modelos no Ollama (primeira vez)
-
-Os modelos são baixados automaticamente pelo warmup do backend na primeira inicialização. Para baixar manualmente:
-
-```bash
-docker exec propesqi_ollama ollama pull gemma3:12b
-docker exec propesqi_ollama ollama pull bge-m3
+docker compose -f docker-compose.aws.yml build frontend && docker compose -f docker-compose.aws.yml up -d frontend
 ```
 
 ### Health checks
 
-Todos os serviços têm `healthcheck` configurado. O backend aguarda `postgres`, `qdrant` e `ollama` saudáveis antes de iniciar (`depends_on: condition: service_healthy`). O backend tem `start_period: 120s` para acomodar o warmup dos modelos.
+Todos os serviços têm `healthcheck` configurado. O backend aguarda `postgres` e `qdrant` saudáveis antes de iniciar (`depends_on: condition: service_healthy`).
+
+Um banco novo já é seedado com `rag_config.llm_provider = 'gemini'` e
+`embedding_provider = 'gemini'`. Se estiver migrando um banco **existente**
+que já tinha documentos indexados com `bge-m3`, troque o provider/model via
+painel admin e depois reindexe tudo — embeddings de providers diferentes não
+são intercambiáveis mesmo com a mesma dimensão de vetor:
+
+```
+POST /api/documents/reindex-all
+Body: {"scope": "all"}
+```
 
 ---
 
@@ -948,9 +965,9 @@ locust -f tests/load/locustfile.py --host=http://localhost:8000 \
 Script offline que avalia o pipeline contra 30 perguntas com gabarito e retorna uma pontuação média 0–5.
 
 **Pré-requisitos:**
-- Stack Docker rodando (backend, Qdrant, Ollama)
+- Stack Docker rodando via `docker-compose.aws.yml` (backend, Postgres, Qdrant)
 - `GOOGLE_API_KEY` configurada (judge usa Gemini API)
-- Backend configurado com `llm_provider=gemini` e `llm_model=gemini-3.1-flash-lite` no `rag_config` (ou `local` para usar Ollama)
+- Backend configurado com `llm_provider=gemini` e `llm_model=gemini-3.1-flash-lite` no `rag_config`
 
 ```bash
 cd backend
@@ -961,11 +978,12 @@ python tests/run_groundtruth_eval.py
 
 | Arquivo | Descrição |
 |---------|-----------|
-| `tests/groundtruth_chatbot_rag.csv` | Ground truth: 30 perguntas + respostas esperadas + keywords |
-| `tests/groundtruth_chatbot_rag_resultados_passoN_full.csv` | Resultado do eval do Passo N |
-| `tests/relatorio_otimizacao_rag.md` | Relatório completo do ciclo de otimização (Passos 5–14) |
+| `tests/groundtruth_chatbot_rag.csv` | Ground truth original: 30 perguntas + respostas esperadas + keywords |
+| `tests/groundtruth_chatbot_rag_ampliado.csv` | Ground truth ampliado: 90 perguntas adicionais (desde o Passo 25) |
+| `tests/groundtruth_chatbot_rag_resultados_passoN_full.csv` / `..._ampliado_resultados_passoN.csv` | Resultado do eval do Passo N, por golden-set |
+| `tests/relatorio_otimizacao_rag.md` | Relatório completo do ciclo de otimização (Passos 5–33) |
 
-**Evolução de qualidade (gemini-3.1-flash-lite):**
+**Evolução de qualidade (gemini-3.1-flash-lite) — ciclo 1, embeddings locais bge-m3:**
 
 | Passo | Melhoria | Pontuação |
 |-------|----------|-----------|
@@ -976,4 +994,18 @@ python tests/run_groundtruth_eval.py
 | 11 | Reranker GPU + warmup | 4.52/5 |
 | 12 | Q25 multi-edital + regra vigência | 4.37/5 |
 | 13 | Q21 PIBICEM colégio (pinned) | 4.57/5 |
-| **14** | **Q18 expansão lexical PIBITI** | **4.62/5 (92.4%)** |
+| 14 | Q18 expansão lexical PIBITI | 4.62/5 (92.4%) — recorde do ciclo 1, superado pela migração de embeddings abaixo |
+
+**Ciclo 2 — reinício após migração de `embedding_provider` para Gemini (deploy cloud/AWS):**
+
+A troca de bge-m3 (local) para Gemini (`gemini-embedding-001`) anulou quase todo o ganho acumulado do ciclo 1, forçando um novo baseline. A partir do Passo 25, cada mudança é validada tanto no golden-set original (30 perguntas) quanto no ampliado (90 perguntas).
+
+| Passo | Melhoria | Original (30) | Ampliado (90) |
+|-------|----------|----------------|----------------|
+| 20 | Novo baseline (embeddings Gemini, corpus estável) | 4.073/5 | — |
+| 30 | Pinned injection PIBIC | 4.165/5 | 3.807/5 |
+| 31 | Guard `_GENERIC_PROGRAM_DEFINITION_RE` (Q01/Q16) | 4.360/5 | 3.846/5 |
+| **32** | **Limpeza do system prompt (Nível 1)** | **4.463/5 (89.3%)** | **3.826/5 (76.5%)** |
+| 33 | Regras 10/11 (resposta parcial) — testado e revertido | 4.413/5 | 3.892/5 |
+
+**Estado de produção atual: configuração do Passo 32.** O Passo 33 melhorou a pontuação agregada mas piorou a métrica de ausência de alucinação nos dois golden-sets (−0.033 e −0.022) — revertido por esse motivo; ver `relatorio_otimizacao_rag.md` para a análise completa passo a passo.

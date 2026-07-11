@@ -28,7 +28,7 @@ Sistema de perguntas e respostas sobre documentos internos da **Pró-Reitoria de
 | Embeddings | `bge-m3` (BAAI, 1024 dims) via Ollama |
 | Reranker | `BAAI/bge-reranker-v2-m3` via sentence-transformers (CPU) |
 | Encoder esparso | BM42 via fastembed |
-| OCR | Tesseract 5 + OpenCV + pytesseract |
+| OCR | LLMWhisperer (API cloud, Unstract) |
 | Tokenizer | tiktoken `cl100k_base` |
 | Autenticação | JWT HS256 + bcrypt (python-jose + passlib) |
 | Avaliação RAG | RAGAS |
@@ -47,7 +47,7 @@ Sistema de perguntas e respostas sobre documentos internos da **Pró-Reitoria de
 
 ```
 chatbot/
-├── docker-compose.yml
+├── docker-compose.aws.yml  ← único compose file nesta branch (modo cloud/AWS)
 ├── DOCUMENTATION.md        ← documentação técnica completa
 ├── PLANEJAMENTO.md         ← decisões de arquitetura e justificativas
 ├── init/
@@ -76,7 +76,7 @@ chatbot/
 │       │   ├── sparse.py        ← encoder esparso BM42
 │       │   └── extractors/
 │       │       ├── pdf.py       ← extração nativa (pdfplumber/pypdf)
-│       │       └── ocr.py       ← OCR com OpenCV + Tesseract
+│       │       └── ocr.py       ← OCR via API cloud LLMWhisperer
 │       ├── models/              ← SQLAlchemy ORM models
 │       └── schemas/             ← Pydantic request/response schemas
 └── frontend/
@@ -208,8 +208,9 @@ Ao gerar ou revisar código, sempre verificar:
 - Tailwind para estilos — sem CSS inline exceto quando absolutamente necessário
 
 ### Docker
-- Reconstruir apenas o serviço alterado: `docker compose up -d --build <serviço>`
-- Serviços disponíveis: `postgres`, `qdrant`, `ollama`, `backend`, `frontend`
+- Único compose file nesta branch: `docker-compose.aws.yml` (modo cloud/AWS, sem Ollama/GPU)
+- Reconstruir apenas o serviço alterado: `docker compose -f docker-compose.aws.yml up -d --build <serviço>`
+- Serviços disponíveis: `postgres`, `qdrant`, `backend`, `frontend`
 - Rede interna: `propesqi-net`
 - Frontend exposto na porta `3000` do host; backend em `8000`
 
@@ -254,21 +255,14 @@ O system prompt do assistente obriga:
 ## 12. Comandos Úteis
 
 ```bash
-# Subir todos os serviços (CPU)
-docker compose up -d
-
-# Subir todos os serviços (GPU NVIDIA)
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# Subir todos os serviços (modo cloud/AWS)
+docker compose -f docker-compose.aws.yml up -d
 
 # Reconstruir apenas o frontend
-docker compose up -d --build frontend
+docker compose -f docker-compose.aws.yml up -d --build frontend
 
 # Reconstruir apenas o backend
-docker compose up -d --build backend
-
-# Baixar modelos Ollama
-docker exec propesqi_ollama ollama pull gemma3:12b
-docker exec propesqi_ollama ollama pull bge-m3
+docker compose -f docker-compose.aws.yml up -d --build backend
 
 # Executar testes unitários
 cd backend && pytest tests/ -v --ignore=tests/latency --ignore=tests/load
@@ -277,8 +271,8 @@ cd backend && pytest tests/ -v --ignore=tests/latency --ignore=tests/load
 python3 -c "import secrets; print(secrets.token_hex(32))"
 
 # Verificar logs de um serviço
-docker compose logs -f backend
-docker compose logs -f frontend
+docker compose -f docker-compose.aws.yml logs -f backend
+docker compose -f docker-compose.aws.yml logs -f frontend
 ```
 
 ---
@@ -290,6 +284,5 @@ docker compose logs -f frontend
 - Não criar sessões SQLAlchemy fora do padrão de dependency injection
 - Não adicionar dependências sem atualizar `requirements.txt` (backend) ou `package.json` (frontend)
 - Não modificar o esquema do banco sem atualizar `init/01_schema.sql`
-- Não usar `docker-compose.gpu.yml` em máquinas sem nvidia-container-toolkit instalado
 - Não chamar `fetch`/`axios` diretamente nos componentes React — sempre usar `lib/api.ts`
 - Não expor a porta do Qdrant (6333) externamente em produção

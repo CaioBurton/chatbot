@@ -1,33 +1,22 @@
 # PROPESQI RAG Chatbot
 
-Assistente virtual institucional da Pró-Reitoria de Pesquisa e Inovação (PROPESQI) da Universidade Federal do Piauí (UFPI). Responde dúvidas sobre editais, resoluções e regulamentos de programas de iniciação científica com base em documentos indexados. Suporta dois modos de LLM: local (Ollama/gemma3:12b, sem internet) ou via API externa (Gemini, OpenAI, Anthropic).
+Assistente virtual institucional da Pró-Reitoria de Pesquisa e Inovação (PROPESQI) da Universidade Federal do Piauí (UFPI). Responde dúvidas sobre editais, resoluções e regulamentos de programas de iniciação científica com base em documentos indexados. Esta branch roda exclusivamente em modo cloud/AWS, sem GPU nem Ollama (Gemini para LLM e embeddings — ver `deploy/aws/README.md`). Os modos local (Ollama/gemma3:12b) e híbrido, com seus respectivos `docker-compose.yml`/`docker-compose.gpu.yml`, não existem nesta branch.
 
 ## Requisitos
 
-O sistema suporta dois modos de operação com requisitos diferentes:
+### Modo cloud completo (AWS / Gemini, sem Ollama)
 
-### Modo local (Ollama + gemma3:12b)
-
-Totalmente on-premise, sem chamadas a APIs externas. Requer GPU dedicada.
-
-| Componente | Versão mínima |
-|---|---|
-| Docker + Docker Compose | 24+ |
-| NVIDIA Container Toolkit | qualquer |
-| GPU NVIDIA | 16 GB VRAM recomendado |
-| VRAM disponível | ~9 GB (bge-m3 + gemma3:12b Q4_K_M) |
-
-### Modo externo (Gemini / OpenAI / Anthropic)
-
-Usa uma API de LLM externa para geração de respostas. **Não requer GPU.** O embeddings (`bge-m3`) e o reranker continuam rodando via Ollama localmente.
+Sem GPU e **sem o serviço Ollama** — LLM e embeddings densos são ambos servidos pela API do Gemini. O reranker (`bge-reranker-v2-m3`) e o encoder esparso BM42 continuam rodando localmente, mas em CPU (`backend/Dockerfile.cloud`). OCR de PDFs escaneados roda na nuvem via LLMWhisperer, sem Tesseract/OpenCV local. Pensado para uma única instância EC2 — guia completo em [`deploy/aws/README.md`](deploy/aws/README.md).
 
 | Componente | Requisito |
 |---|---|
 | Docker + Docker Compose | 24+ |
-| GPU NVIDIA | não obrigatória |
-| API key | `GOOGLE_API_KEY`, `OPENAI_API_KEY` ou `ANTHROPIC_API_KEY` |
+| GPU NVIDIA | não necessária |
+| Instância recomendada (AWS) | `t3.xlarge` (4 vCPU / 16 GiB); mínimo viável `t3.large` (2 vCPU / 8 GiB) |
+| API keys | `GOOGLE_API_KEY` (obrigatória) e `LLMWHISPERER_API_KEY` (obrigatória para PDFs escaneados) |
+| Compose file | `docker-compose.aws.yml` + `.env.aws.example` |
 
-> O `llm_provider` e o modelo são configuráveis em runtime pelo painel admin sem reiniciar o serviço. O modo externo com `gemini-3.1-flash-lite` é o utilizado nos ciclos de otimização RAG e no harness de avaliação (`run_groundtruth_eval.py`).
+> O `llm_provider` e o `embedding_provider` são configuráveis em runtime pelo painel admin sem reiniciar o serviço. O modo híbrido/cloud com `gemini-3.1-flash-lite` é o utilizado nos ciclos de otimização RAG e no harness de avaliação (`run_groundtruth_eval.py`).
 
 ## Início rápido
 
@@ -43,16 +32,16 @@ cp .env.example .env
 # 3. Gere uma SECRET_KEY segura (≥ 32 caracteres)
 python3 -c "import secrets; print(secrets.token_hex(32))"
 
-# 4. Suba o stack completo (GPU habilitada por padrão)
-docker compose up -d
+# 4. Suba o stack (modo cloud/AWS — sem GPU, sem Ollama)
+docker compose -f docker-compose.aws.yml up -d
 
 # 5. Aguarde todos os serviços ficarem saudáveis (~2 min na primeira vez)
-docker compose ps
+docker compose -f docker-compose.aws.yml ps
 
 # 6. Acesse a interface em http://localhost:3000
 ```
 
-Na primeira execução o Ollama baixa automaticamente os modelos `gemma3:12b` e `bge-m3` (~9 GB). Para usar um LLM externo em vez do gemma3, configure `llm_provider` no painel admin após subir o stack.
+Use `docker-compose.aws.yml` + `.env.aws.example` — guia completo em [`deploy/aws/README.md`](deploy/aws/README.md). `llm_provider` e `embedding_provider` são configuráveis em runtime pelo painel admin, sem reiniciar o serviço.
 
 ## Arquitetura
 
@@ -63,11 +52,12 @@ Usuário → http://localhost:3000
               │ /api/*
          FastAPI :8000 (backend)
               │
-     ┌────────┼────────────┐
-     │        │            │
- PostgreSQL  Qdrant     Ollama
-  (sessões)  (vetores)  (LLM + embeddings)
+     ┌────────┴────────┐
+     │                 │
+ PostgreSQL          Qdrant
+  (sessões)          (vetores)
 ```
+LLM e embeddings densos vêm da API do Gemini (sem Ollama nesta branch); reranker e BM42 continuam rodando dentro do próprio backend, em CPU.
 
 **Pipeline RAG** (`backend/app/core/rag_engine.py`):
 
@@ -85,11 +75,12 @@ Query → Normalização → HyDE → Multi-query → Hybrid Search RRF
 | Backend | FastAPI (Python 3.11+) + SQLAlchemy 2.0 async |
 | Banco relacional | PostgreSQL 16 |
 | Banco vetorial | Qdrant (vetores `dense` + `sparse`) |
-| LLM | Ollama → `gemma3:12b` (local) ou Gemini / OpenAI / Anthropic (externo) |
-| Embeddings | Ollama → `bge-m3` |
+| LLM | Gemini / OpenAI / Anthropic — switchable via `rag_config` em runtime |
+| Embeddings | Gemini `gemini-embedding-001` |
 | Reranker | `BAAI/bge-reranker-v2-m3` (sentence-transformers, CPU) |
 | Encoder esparso | fastembed BM42 |
-| Infraestrutura | Docker Compose + GPU overlay |
+| OCR (PDFs escaneados) | LLMWhisperer API (cloud) — requer `LLMWHISPERER_API_KEY` |
+| Infraestrutura | Docker Compose, CPU-only (`backend/Dockerfile.cloud`) |
 
 ## Configuração (`.env`)
 
@@ -109,13 +100,16 @@ Query → Normalização → HyDE → Multi-query → Hybrid Search RRF
 | `REFRESH_TOKEN_EXPIRE_DAYS` | Validade do refresh token (padrão: 7) |
 | `ALLOWED_ORIGINS` | Origens CORS permitidas |
 | `VITE_API_URL` | URL base da API para o build do frontend (padrão: `/api`) |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` | Opcionais — apenas se `llm_provider != 'local'` |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` | Opcionais — apenas se `llm_provider`/`embedding_provider != 'local'` |
+| `LLMWHISPERER_API_KEY` | Obrigatória para processar PDFs escaneados (OCR via API cloud) |
+| `MAX_CONCURRENT_INGESTIONS` | Máx. de documentos processados em paralelo (padrão: 1) — suba em instâncias maiores |
+| `MAX_CONCURRENT_CHAT_REQUESTS` | Máx. de requisições `/chat/stream` em paralelo (padrão: 3) — baixe em instâncias CPU-only pequenas para evitar OOM |
 
 ## Gerenciamento de documentos
 
 O painel admin (acesso via login em `/`) permite:
 
-- **Upload de PDFs** — nativos ou escaneados (OCR automático via Tesseract)
+- **Upload de PDFs** — nativos ou escaneados (OCR automático via API cloud LLMWhisperer)
 - **Tipos de documento:** `edital`, `aditivo`, `resolucao`, `tutorial`, `portaria`, `relatorio`
 - **Aditivos:** ao selecionar o tipo `aditivo`, um campo opcional "Edital de referência" aparece. Preenchê-lo com o nome do edital pai (ex.: `Edital ICV 2025/2026`) ativa a expansão bidirecional de contexto no pipeline RAG
 - **Reindexação:** documentos com erro podem ser reprocessados individualmente
@@ -134,7 +128,7 @@ O painel admin (acesso via login em `/`) permite:
 |---|---|---|
 | `POST /api/auth/login` | — | Login, retorna access + refresh tokens |
 | `POST /api/auth/refresh` | — | Renova access token |
-| `GET /api/chat/stream` | — | Q&A via SSE streaming |
+| `POST /api/chat/stream` | — | Q&A via SSE streaming |
 | `POST /api/documents/upload` | JWT admin | Upload de PDF |
 | `GET /api/documents` | JWT admin | Lista documentos |
 | `POST /api/documents/{id}/reindex` | JWT admin | Reindexar documento |
@@ -173,13 +167,13 @@ npm run build    # build de produção (tsc + vite → dist/)
 
 ```bash
 # Backend (Python)
-docker compose build backend && docker compose up -d backend
+docker compose -f docker-compose.aws.yml build backend && docker compose -f docker-compose.aws.yml up -d backend
 
 # Frontend (React)
-docker compose build frontend && docker compose up -d frontend
+docker compose -f docker-compose.aws.yml build frontend && docker compose -f docker-compose.aws.yml up -d frontend
 
 # Ambos
-docker compose build backend frontend && docker compose up -d backend frontend
+docker compose -f docker-compose.aws.yml build backend frontend && docker compose -f docker-compose.aws.yml up -d backend frontend
 ```
 
 ## Estrutura do projeto
@@ -207,20 +201,26 @@ chatbot/
 │   │   ├── latency/          # testes ASGI in-process
 │   │   ├── load/             # locustfile para testes de carga
 │   │   └── run_groundtruth_eval.py  # avaliação com ground truth (judge: gemini-3.1-flash-lite)
+│   ├── Dockerfile             # imagem GPU (Ollama local)
+│   ├── Dockerfile.cloud       # imagem CPU-only (modo AWS/cloud, sem CUDA)
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── admin/        # UploadZone, UploadMetadataModal, painel RAG
-│   │   │   └── chat/         # interface de chat SSE
+│   │   │   ├── admin/        # UploadZone, UploadMetadataModal, painel RAG (tabs Documentos/Parâmetros)
+│   │   │   └── chat/         # interface de chat SSE, sidebar responsiva
 │   │   └── lib/              # api.ts, uuid.ts
 │   └── nginx.conf            # proxy reverso /api → backend:8000
 ├── init/
 │   ├── 00_roles.sh           # cria papel de menor privilégio
 │   ├── 01_schema.sql         # schema + migrações idempotentes
 │   └── 02_seed_admin.sh      # seed do primeiro admin
-├── docker-compose.yml
+├── deploy/aws/
+│   ├── README.md             # guia de deploy em EC2 (instância, security group, TLS)
+│   └── user-data.sh          # cloud-init: instala Docker + Compose plugin
+├── docker-compose.aws.yml     # único compose file nesta branch (sem Ollama, CPU-only)
 ├── .env.example
+├── .env.aws.example
 └── CLAUDE.md
 ```
 
@@ -229,6 +229,9 @@ chatbot/
 - **Segredos:** nunca comite o arquivo `.env`. Use um gerenciador de segredos ou variáveis de ambiente do sistema em produção.
 - **CORS:** restrinja `ALLOWED_ORIGINS` ao hostname real do frontend em produção.
 - **Uploads grandes:** PDFs escaneados podem levar vários minutos. O timeout de upload no nginx deve ser ajustado adequadamente.
-- **VRAM:** `OLLAMA_NUM_PARALLEL=1` evita OOM em GPUs com 16 GB. Aumentar apenas se houver VRAM disponível. No modo externo (Gemini/OpenAI), o Ollama ainda é usado para embeddings (`bge-m3`) mas não carrega o gemma3:12b, liberando toda a VRAM.
+- **VRAM:** `OLLAMA_NUM_PARALLEL=1` evita OOM em GPUs com 16 GB. Aumentar apenas se houver VRAM disponível. No modo híbrido (Gemini/OpenAI para LLM), o Ollama ainda é usado para embeddings (`bge-m3`) mas não carrega o gemma3:12b, liberando toda a VRAM.
+- **RAM em instâncias CPU-only (modo cloud/AWS):** sem GPU, o reranker e o BM42 competem por RAM com o resto do backend. `MAX_CONCURRENT_CHAT_REQUESTS` (padrão 3) e `MAX_CONCURRENT_INGESTIONS` (padrão 1) limitam quantas requisições de chat/uploads rodam ao mesmo tempo — baixe esses valores em instâncias pequenas (ex.: 2 vCPU/8 GiB) para evitar OOM kill do container sob carga concorrente.
 - **fastembed BM42:** baixa ~100 MB de modelo na primeira execução. Em ambientes offline, pré-baixe e monte como volume Docker.
 - **Qdrant:** se a coleção existente tiver configuração legada (vetor único), `ensure_collection()` **recria a coleção** — todos os dados indexados são perdidos. Faça backup antes de migrar.
+- **OCR:** todos os modos usam a API cloud LLMWhisperer para PDFs escaneados (`LLMWHISPERER_API_KEY` obrigatória para esse fluxo) — não há mais Tesseract/OpenCV local.
+- **Migração de embeddings:** embeddings de providers diferentes não são intercambiáveis mesmo com a mesma dimensão. Ao trocar `embedding_provider` (ex.: `local` → `gemini`), reindexe tudo via `POST /api/documents/reindex-all`.

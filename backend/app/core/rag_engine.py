@@ -52,6 +52,81 @@ _RAG_PAYLOAD_FILTER = Filter(
     ]
 )
 
+# Inverse of _RAG_PAYLOAD_FILTER — used only as a rescue pass (see the
+# fallback guard in rag_stream) when the primary, edital-scoped search finds
+# nothing at all. Many questions about portarias/relatórios anuais have no
+# lexical signal ("Qual é a função da CBIO?"), so a regex-guarded special
+# case (the pattern used elsewhere in this file) can't reliably catch them —
+# gating on "the primary search returned nothing" instead means the rescue
+# never competes with a successful edital retrieval and can't reintroduce
+# the exact regression _RAG_PAYLOAD_FILTER was added to prevent.
+_PORTARIA_RELATORIO_FILTER = Filter(
+    must=[
+        FieldCondition(
+            key="doc_type",
+            match=MatchAny(any=["portaria", "relatorio"]),
+        )
+    ]
+)
+
+# Matches an explicit cycle mention like "2025/2026" or "2025-2026" in the
+# user's own query.
+_CYCLE_IN_QUERY_RE = re.compile(r"\b(20\d{2})[/-](20\d{2})\b")
+
+# Guards the portaria/relatorio rescue (see rag_stream) against the Passo 5
+# regression pattern re-appearing through the cross-encoder (investigated in
+# Passo 25/31 — Q01/Q16): portarias that designate committee members name the
+# program by full title ("...Comitê ... Programa Institucional de Bolsas de
+# Iniciação Científica..."), which scores deceptively well via the reranker
+# against a purely definitional question — even though a portaria/relatório
+# structurally never states a program's objectives (they designate
+# committees, extend deadlines, or report statistics). Narrowly scoped to
+# "objetivo/foco/o que é <programa>"-style questions, which reliably signal
+# that only the edital itself can be a correct source — unlike the broader
+# portaria/relatorio topic itself, which has no comparably reliable lexical
+# marker (see the rescue's own docstring).
+_GENERIC_PROGRAM_DEFINITION_RE = re.compile(
+    # 150-char window: wide enough to bridge "objetivos ... (PIBIC)" across a
+    # fully spelled-out program name ("Programa Institucional de Bolsas de
+    # Iniciação Científica"), which alone runs ~65 chars.
+    r"\b(objetivos?|foco|finalidade|prop[óo]sito)\b.{0,150}\b(PIBIC(?:-EM)?|PIBITI|ICV)\b"
+    r"|\b(PIBIC(?:-EM)?|PIBITI|ICV)\b.{0,150}\b(objetivos?|foco|finalidade|prop[óo]sito)\b"
+    r"|\bo\s+que\s+[ée]\b.{0,60}\b(PIBIC(?:-EM)?|PIBITI|ICV)\b",
+    re.IGNORECASE,
+)
+
+
+def _effective_cycle(query: str) -> str | None:
+    """Derive the active cycle strictly from an explicit mention in the
+    question itself (e.g. "...para 2025/2026?").
+
+    Deliberately NOT falling back to rag_config.active_edital_cycle for
+    cycle-agnostic questions: a single global "current cycle" can't be
+    enforced as a blanket default when not every program has been reissued
+    for it yet (e.g. ICV has no 2026/2027 edition) — unconditionally
+    preferring the configured cycle would silently empty the candidate pool
+    for those programs instead of falling back to their only (older) edital.
+    """
+    match = _CYCLE_IN_QUERY_RE.search(query)
+    return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def _cycle_survivors(points: list, cycle: str | None) -> list:
+    """Presence-gated cycle guard: excludes chunks tagged with a DIFFERENT
+    cycle than `cycle`, but only when at least one candidate is actually
+    tagged with `cycle` — a hard, unconditional exclusion would silently wipe
+    out the only available source for a program that hasn't published an
+    edital for the configured cycle yet (e.g. ICV has no 2026/2027 edition:
+    filtering its 2025/2026 chunks whenever active_edital_cycle=2026/2027
+    leaves nothing at all, converting a working answer into a fallback).
+    Chunks with no edital_cycle tag are always eligible, regardless."""
+    if not cycle:
+        return points
+    same_cycle = [pt for pt in points if (pt.payload or {}).get("edital_cycle") == cycle]
+    if not same_cycle:
+        return points
+    return [pt for pt in points if (pt.payload or {}).get("edital_cycle") in (None, cycle)]
+
 # Q15 pinned injection: ICV-only search to bypass reranker competition.
 # MatchText("icv") on the source field tokenises filenames like
 # "3-2025-2026_Edital_ICV.pdf" → includes all ICV editais regardless of year.
@@ -67,6 +142,26 @@ _ICV_HABILITACAO_RE = re.compile(
 _ICV_HABILITACAO_QUERY = (
     "ICV habilitado etapa análise planos trabalho proponente atingir mínimo "
     "pontos somatório total tabela pontuação Iniciação Científica Voluntária"
+)
+
+# Q06 pinned injection: PIBIC (not PIBIC-EM/PIBITI/ICV) habilitação pontos
+# mínimos. PIBIC-EM and PIBITI share near-identical vocabulary with regular
+# PIBIC ("plano de trabalho", "produção intelectual", "pontos mínimos"), and
+# that generic phrasing consistently outranks PIBIC's own specific "10 (dez)
+# pontos" clause (buried mid-paragraph, competing against denser generic
+# content from other programs). text_contains anchors to PIBIC's literal
+# threshold, which naturally excludes PIBIC-EM's clause (a different number,
+# "5 (cinco) pontos") without needing negative source filtering.
+_PIBIC_HABILITACAO_RE = re.compile(
+    r"\bPIBIC\b.{0,120}\bpontos?\s+m[íi]nimos?\b"
+    r"|\bpontos?\s+m[íi]nimos?\b.{0,120}\bPIBIC\b",
+    re.IGNORECASE,
+)
+_PIBIC_EM_PIBITI_ICV_RE = re.compile(r"PIBIC-EM|PIBITI|\bICV\b", re.IGNORECASE)
+_PIBIC_HABILITACAO_QUERY = (
+    "PIBIC habilitado etapa análise planos trabalho proponente atingir "
+    "mínimo 10 dez pontos somatório total tabela pontuação produção "
+    "intelectual Iniciação Científica"
 )
 
 # Q05 pinned injection: "vigência bolsas" for a specific program (not Q25 cross-program).
@@ -146,9 +241,52 @@ _PIBICEM_COLEGIO_QUERY = (
     "sem obrigatoriedade vinculado colégio escola lotado orientador 3.2.1 requisito"
 )
 
+# Q03/Q10 pinned injection: PIBIC "3.3 Discente" eligibility section — the IRA clause
+# (Q03) and the PIBIC-Af affirmative-action clause (Q10) live in the same parent chunk
+# (page 2 of the main edital), but generic retrieval surfaces "orientador"/"cota de
+# bolsas" sections from the same document instead of this one.
+_PIBIC_DISCENTE_RE = re.compile(r"\bIRA\b(?!.*PIBIC-EM)|\bPIBIC-?Af\b", re.IGNORECASE)
+_PIBIC_DISCENTE_QUERY = (
+    "Índice de Rendimento Acadêmico IRA mínimo recomendado igual superior 7,0 sete "
+    "ação afirmativa Lei de Cotas 12.711/2012 PIBIC-Af discente bolsista graduação "
+    "matrícula período compatível vigência"
+)
+
+# Q19 pinned injection: PIBITI 4.1.5.1 — orientador deve orientar o bolsista
+# diretamente nas distintas fases da pesquisa; the Anexo I scoring clause ("...como
+# coorientador") shares the word "coorientador" and wins the generic search instead.
+_PIBITI_COORIENTADOR_RE = re.compile(r"\bcoorientador\b", re.IGNORECASE)
+_PIBITI_ORIENTACAO_QUERY = (
+    "PIBITI orientador cumprir requisitos orientar bolsista discente voluntário "
+    "distintas fases pesquisa tecnológica diretamente 4.1.5"
+)
+
+# Q24 pinned injection: ICV vs PIBIC "natureza da participação" — no single chunk
+# states the voluntary/paid distinction explicitly; the section TITLES carry the
+# signal ("vigência da BOLSA" no PIBIC vs "vigência da PARTICIPAÇÃO VOLUNTÁRIA" no
+# ICV). Pin both side by side so the LLM can contrast them.
+_ICV_PIBIC_NATUREZA_RE = re.compile(
+    r"\bdiferen[cç]a\b.{0,60}\bICV\b.{0,60}\bPIBIC\b"
+    r"|\bdiferen[cç]a\b.{0,60}\bPIBIC\b.{0,60}\bICV\b"
+    r"|\bnatureza\b.{0,100}\bICV\b.{0,60}\bPIBIC\b"
+    r"|\bnatureza\b.{0,100}\bPIBIC\b.{0,60}\bICV\b",
+    re.IGNORECASE,
+)
+_ICV_VOLUNTARIA_QUERY = (
+    "DO PERÍODO DE VIGÊNCIA DA PARTICIPAÇÃO VOLUNTÁRIA ICV discente voluntário sem bolsa"
+)
+_PIBIC_BOLSA_QUERY = (
+    "DO PERÍODO DE VIGÊNCIA DA BOLSA PIBIC bolsista CNPq UFPI vigência doze meses"
+)
+
 logger = logging.getLogger(__name__)
 
 _LOCAL_MODEL = "gemma3:12b"
+
+# Output length cap shared by every provider call (HyDE/multiquery/compression
+# single-shot helpers and the final streaming response) — previously hardcoded
+# separately in each of the 6 call sites below.
+_LLM_MAX_TOKENS = 1024
 
 # Serialise all Ollama inference calls to prevent concurrent GPU pressure.
 # gemma3:12b fills most of the 16 GB VRAM on the RTX 5060 Ti; running two or
@@ -264,6 +402,53 @@ _LEXICAL_EXPANSIONS: list[tuple[re.Pattern, str]] = [
         "ICV habilitado etapa análise planos trabalho proponente atingir mínimo pontos "
         "somatório total tabela pontuação Iniciação Científica Voluntária",
     ),
+    # Q03-type: "IRA" for the main PIBIC edital (not PIBIC-EM, which has its own IRA
+    # clause and its own query — negative lookahead keeps this from firing on Q22).
+    (
+        re.compile(r"\bIRA\b(?!.*PIBIC-EM)", re.IGNORECASE),
+        "Índice de Rendimento Acadêmico IRA mínimo recomendado igual superior 7,0 sete "
+        "bolsista graduação matrícula período compatível vigência PIBIC PIBIC-Af",
+    ),
+    # Q10-type: "PIBIC-Af" eligibility — the affirmative-action clause (Lei de Cotas)
+    # is crowded out by the more generic orientador/obrigações sections of the same doc.
+    (
+        re.compile(r"\bPIBIC-?Af\b", re.IGNORECASE),
+        "ação afirmativa Lei de Cotas 12.711/2012 ingresso UFPI PIBIC-Af beneficiário "
+        "discente matriculado graduação IRA elegibilidade requisitos",
+    ),
+    # Q16-type: "foco"/"objetivo" + PIBITI — the Seção 2 objectives paragraph is
+    # crowded out by cover-page/header boilerplate that also matches "PIBITI".
+    (
+        re.compile(
+            r"\b(foco|objetivo)\b.{0,80}\bPIBITI\b|\bPIBITI\b.{0,80}\b(foco|objetivo)\b",
+            re.IGNORECASE,
+        ),
+        "PIBITI pesquisa aplicada desenvolvimento tecnológico inovação inserção recursos "
+        "humanos formação capacidade inovadora empresas cidadão criativo empreendedor "
+        "metodologias pesquisa tecnológica produtos tecnológicos",
+    ),
+    # Q19-type: "coorientador" — the PIBITI clause vedando coorientador is crowded out
+    # by unrelated Anexo/ad-hoc boilerplate that also mentions "orientador".
+    (
+        re.compile(r"\bcoorientador\b", re.IGNORECASE),
+        "PIBITI vedada inclusão coorientador orientador orienta diretamente distintas "
+        "fases pesquisa tecnológica",
+    ),
+    # Q24-type: ICV vs PIBIC "diferença"/"natureza" of participation — the voluntary
+    # (ICV) vs remunerated (PIBIC) distinction isn't stated verbatim in any single
+    # crowded-out chunk; inject vocabulary from both sides explicitly.
+    (
+        re.compile(
+            r"\bdiferen[cç]a\b.{0,60}\bICV\b.{0,60}\bPIBIC\b"
+            r"|\bdiferen[cç]a\b.{0,60}\bPIBIC\b.{0,60}\bICV\b"
+            r"|\bnatureza\b.{0,100}\bICV\b.{0,60}\bPIBIC\b"
+            r"|\bnatureza\b.{0,100}\bPIBIC\b.{0,60}\bICV\b",
+            re.IGNORECASE,
+        ),
+        "ICV caráter voluntário participação sem bolsa remunerada PIBIC bolsa remunerada "
+        "CNPq UFPI Termo de Compromisso plano de trabalho relatórios Seminário Iniciação "
+        "Científica diferença natureza",
+    ),
 ]
 
 
@@ -317,11 +502,65 @@ async def _pinned_search(
             for k in text_contains
         ):
             return False
-        if cycle_filter and payload.get("edital_cycle") not in (None, cycle_filter):
-            return False
         return True
 
-    return expand_to_parents([pt for pt in points if _matches(pt)])
+    candidates = [pt for pt in points if _matches(pt)]
+    # Cycle guard applied last, and only among candidates that already match
+    # every other criterion — see _cycle_survivors for why this is
+    # presence-gated rather than an unconditional exclusion.
+    candidates = _cycle_survivors(candidates, cycle_filter)
+    return expand_to_parents(candidates)
+
+
+def _promote_pinned(reranked_parents: list[dict], pinned: dict, context_top_k: int) -> list[dict]:
+    """Force `pinned` into context position [0], deduplicating any existing
+    occurrence of the same parent elsewhere in the list first.
+
+    Earlier versions skipped promotion entirely whenever the pinned parent
+    was already present anywhere in reranked_parents — the assumption being
+    "already there" meant "no work to do". That assumption breaks when the
+    main retrieval surfaces the right chunk but buries it near the bottom of
+    context_top_k: the chunk is technically in the prompt, but the LLM
+    reliably fails to use it from a low position. A change to chunk
+    embeddings (e.g. child-chunk overlap) is enough to shift a pinned target
+    from "absent" to "present but buried", silently regressing a question
+    that used to pass. Always promoting — never just skipping — removes that
+    failure mode for good.
+    """
+    pid = pinned["parent_id"]
+    return [pinned] + [p for p in reranked_parents if p["parent_id"] != pid][: context_top_k - 1]
+
+
+async def _union_search(
+    queries: list[str],
+    *,
+    payload_filter: Filter,
+    rag_cfg,
+    embedding_provider: str,
+    embedding_model: str,
+) -> list[ScoredPoint]:
+    """Union+dedup hybrid_search across `queries`, keeping the max RRF score
+    per point id. Extracted so the primary (edital-scoped) search and the
+    portaria/relatorio pool (see rag_stream) share one implementation."""
+    merged_by_id: dict[str, ScoredPoint] = {}
+    for q in queries:
+        if not q:
+            continue
+        pts = await hybrid_search(
+            q,
+            top_k=rag_cfg.search_top_k,
+            score_threshold=rag_cfg.search_score_threshold,
+            payload_filter=payload_filter,
+            embedding_provider=embedding_provider,
+            embedding_model=embedding_model,
+        )
+        for pt in pts:
+            pid = str(pt.id)
+            existing = merged_by_id.get(pid)
+            if existing is None or pt.score > existing.score:
+                merged_by_id[pid] = pt
+    return list(merged_by_id.values())
+
 
 # Compression prompt is module-level to avoid per-call re-allocation and to
 # keep the instruction surface auditable in one place.
@@ -359,12 +598,14 @@ Modelo: "Conforme o Aditivo nº 2 do Edital ICV 2025/2026, o prazo passou a ser.
 Se o contexto indicar que o envio de relatórios nos editais de iniciação científica é feito \
 "exclusivamente pelo sistema SIGAA" (ou "exclusivamente via SIGAA"), inclua essa informação \
 ao descrever prazos de envio de qualquer relatório (parcial, semestral ou final).
+8. Não use frases de preenchimento como "este documento fala sobre...", "de acordo com o \
+documento em minha base de dados..." ou "com base no contexto apresentado...". Vá direto ao conteúdo da resposta.
+9. Os números entre colchetes (ex: "[1]", "[2]") antes de cada documento no contexto são \
+apenas para sua referência interna — nunca os mencione na resposta. Refira-se aos documentos \
+pelo nome (ex: "conforme o Edital PIBIC 2025/2026...").
 
 CONTEXTO DOS DOCUMENTOS:
-{context}
-
-HISTÓRICO DA CONVERSA:
-{chat_history}\
+{context}\
 """
 
 
@@ -457,7 +698,7 @@ async def _anthropic_generate(prompt: str, temperature: float, settings, model: 
             },
             json={
                 "model": model,
-                "max_tokens": 1024,
+                "max_tokens": _LLM_MAX_TOKENS,
                 "temperature": temperature,
                 "messages": [{"role": "user", "content": prompt}],
             },
@@ -474,7 +715,7 @@ async def _gemini_generate(prompt: str, temperature: float, settings, model: str
             params={"key": settings.GOOGLE_API_KEY},
             json={
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": temperature, "maxOutputTokens": 1024},
+                "generationConfig": {"temperature": temperature, "maxOutputTokens": _LLM_MAX_TOKENS},
             },
         )
         resp.raise_for_status()
@@ -540,18 +781,6 @@ def _build_context(parents: list[dict]) -> str:
         header = f"[{i}] {source}" + (f" (p. {page})" if page else "")
         parts.append(f"{header}\n{text}")
     return "\n\n".join(parts)
-
-
-def _build_history(messages: list[ChatMessage]) -> str:
-    if not messages:
-        return "(sem histórico)"
-    parts = []
-    for msg in messages:
-        role_label = "Usuário" if msg.role == "user" else "Assistente"
-        # Truncate each message to avoid context-window overflow from long turns
-        text = msg.content[:500]
-        parts.append(f"{role_label}: {text}")
-    return "\n".join(parts)
 
 
 async def _compress_context(
@@ -725,7 +954,7 @@ async def rag_stream(
     llm_model: str = getattr(rag_cfg, "llm_model", _LOCAL_MODEL) or _LOCAL_MODEL
     embedding_provider: str = getattr(rag_cfg, "embedding_provider", "local") or "local"
     embedding_model: str = getattr(rag_cfg, "embedding_model", "bge-m3") or "bge-m3"
-    active_cycle: str | None = getattr(rag_cfg, "active_edital_cycle", None) or None
+    active_cycle: str | None = _effective_cycle(query)
     response_parts: list[str] = []
     reranked_parents: list[dict] = []
     pipeline_start = time.perf_counter()
@@ -820,49 +1049,81 @@ async def rag_stream(
         all_queries.extend(extra_queries)
         all_queries.extend(_lexical_injection_queries(query))
 
-        # Union + dedup across all queries (keep highest score per point ID)
-        stage_start = time.perf_counter()
-        merged_by_id: dict[str, ScoredPoint] = {}
-        for q in all_queries:
-            if not q:
-                continue
-            pts = await hybrid_search(
-                q,
-                top_k=rag_cfg.search_top_k,
-                score_threshold=rag_cfg.search_score_threshold,
-                payload_filter=_RAG_PAYLOAD_FILTER,
-                embedding_provider=embedding_provider,
-                embedding_model=embedding_model,
-            )
-            for pt in pts:
-                pid = str(pt.id)
-                existing = merged_by_id.get(pid)
-                if existing is None or pt.score > existing.score:
-                    merged_by_id[pid] = pt
-
-        merged_points = list(merged_by_id.values())
-        _log_stage_duration(session_id, "retrieval", stage_start)
-
-        # ------------------------------------------------------------------ #
-        # 4. Reranking                                                        #
-        # ------------------------------------------------------------------ #
         # Augment the reranker query with lexical expansion terms so the
         # cross-encoder scores domain-specific chunks correctly even when the
         # original query uses different vocabulary (e.g. "sistema" vs "SIGAA").
+        # Computed up front since it only depends on `query`, not on retrieval
+        # results — needed by both the primary search and the rescue pass below.
         _lex_expansions = _lexical_injection_queries(query)
         reranker_query = query + (" " + " ".join(_lex_expansions) if _lex_expansions else "")
 
+        # ------------------------------------------------------------------ #
+        # 3b. Retrieval                                                        #
+        # ------------------------------------------------------------------ #
+        # _RAG_PAYLOAD_FILTER protects edital questions from a documented
+        # regression (Passo 5, relatorio_otimizacao_rag.md — portarias naming
+        # programs by name used to outrank the real edital content in the
+        # cross-encoder reranker). But some questions only have an answer in
+        # portaria/relatorio docs, most with no lexical signal to gate a regex
+        # on ("Qual é a função da CBIO?").
         stage_start = time.perf_counter()
+        primary_points = await _union_search(
+            all_queries, payload_filter=_RAG_PAYLOAD_FILTER, rag_cfg=rag_cfg,
+            embedding_provider=embedding_provider, embedding_model=embedding_model,
+        )
+        _log_stage_duration(session_id, "retrieval", stage_start)
+
+        # ------------------------------------------------------------------ #
+        # 4. Reranking (with portaria/relatorio rescue)                       #
+        # ------------------------------------------------------------------ #
+        stage_start = time.perf_counter()
+        primary_points = _cycle_survivors(primary_points, active_cycle)
+
         if rag_cfg.reranker_enabled:
-            reranked = await rerank(
-                reranker_query,
-                merged_points,
-                top_k=rag_cfg.reranker_top_k,
-                score_threshold=rag_cfg.reranker_score_threshold,
-            )
+            # Routing between the edital pool and the portaria/relatorio pool
+            # needs a score that's comparable ACROSS two independent search
+            # calls. Raw hybrid_search (RRF) scores are NOT that: they're a
+            # rank-position artifact local to each call's own small top-k
+            # list (empirically verified — many plain edital questions from
+            # the original 30-question golden set score just as high, or
+            # higher, on the portaria/relatorio pool as genuine portaria
+            # questions do, with no threshold separating the two). The
+            # cross-encoder reranker's sigmoid-normalized score IS a
+            # calibrated, comparable relevance estimate for a given
+            # (query, chunk) pair regardless of which pool the chunk came
+            # from — so only attempt the rescue when a real reranker is
+            # available to arbitrate between the two pools.
+            if _GENERIC_PROGRAM_DEFINITION_RE.search(query):
+                # "Quais são os objetivos do PIBIC?"-style questions: skip the
+                # rescue attempt outright rather than let the score comparison
+                # decide (see _GENERIC_PROGRAM_DEFINITION_RE docstring — this
+                # is the Q01/Q16 regression from Passo 25/31).
+                reranked = await rerank(
+                    reranker_query, primary_points,
+                    top_k=rag_cfg.reranker_top_k, score_threshold=rag_cfg.reranker_score_threshold,
+                )
+            else:
+                rescue_points = await _union_search(
+                    all_queries, payload_filter=_PORTARIA_RELATORIO_FILTER, rag_cfg=rag_cfg,
+                    embedding_provider=embedding_provider, embedding_model=embedding_model,
+                )
+                rescue_points = _cycle_survivors(rescue_points, active_cycle)
+                primary_reranked, rescue_reranked = await asyncio.gather(
+                    rerank(reranker_query, primary_points, top_k=rag_cfg.reranker_top_k, score_threshold=rag_cfg.reranker_score_threshold),
+                    rerank(reranker_query, rescue_points, top_k=rag_cfg.reranker_top_k, score_threshold=rag_cfg.reranker_score_threshold),
+                )
+                primary_top = max((p.score for p in primary_reranked), default=0.0)
+                rescue_top = max((p.score for p in rescue_reranked), default=0.0)
+                reranked = rescue_reranked if rescue_top > primary_top else primary_reranked
         else:
-            # Skip reranker: sort by vector search score and take top_k
-            reranked = sorted(merged_points, key=lambda p: p.score, reverse=True)[:rag_cfg.reranker_top_k]
+            # No cross-encoder available to arbitrate — without one, a
+            # rescue attempt has no reliable signal (see above) and risks
+            # exactly the Passo 5 regression _RAG_PAYLOAD_FILTER exists to
+            # prevent. Fall back to the original, safe edital-only behavior;
+            # the rescue activates automatically once the reranker is
+            # reactivated (already the next step in the ongoing gradual
+            # reactivation cycle — relatorio_otimizacao_rag.md).
+            reranked = sorted(primary_points, key=lambda p: p.score, reverse=True)[:rag_cfg.reranker_top_k]
         _log_stage_duration(session_id, "reranking", stage_start)
 
         # ------------------------------------------------------------------ #
@@ -883,12 +1144,13 @@ async def rag_stream(
         if rag_cfg.parent_child_expansion_enabled:
             reranked_parents = expand_to_parents(reranked)[:context_top_k]
         else:
-            # Mirror expand_to_parents()'s fallback (db/search.py) so every
-            # entry in reranked_parents always has a "parent_id" key — the
-            # Qdrant payload itself never stores parent_id (it's a top-level
-            # chunk field, not part of chunk["metadata"]; see chunker.py),
-            # so omitting this fallback makes every pinned injection below
-            # raise KeyError as soon as one of their regexes matches.
+            # Raw Qdrant payloads never carry a "parent_id" key (it's a
+            # chunker-internal field, not copied into payload at indexing
+            # time — see app/ingestion/chunker.py). expand_to_parents()
+            # papers over this with `payload.get("parent_id") or str(point.id)`;
+            # mirror that fallback here so the pinned-injection blocks below
+            # (which all do direct `p["parent_id"]` access) don't KeyError
+            # when parent_child_expansion_enabled is False.
             reranked_parents = [
                 {
                     **(pt.payload or {}),
@@ -900,7 +1162,10 @@ async def rag_stream(
 
         # Pinned ICV injection (Q15-type): when the query asks about ICV + pontos
         # mínimos, the habilitação chunk (6.1.2.2) is consistently outranked by
-        # identical-vocabulary PIBIC/PIBITI sections.
+        # identical-vocabulary PIBIC/PIBITI sections. page_number==4 pins the
+        # exact chunk with "6.1.2.2 ... 5 (cinco) pontos" — without it, the
+        # highest-ranked ICV hit is often page 2 (eligibility criteria, no
+        # point threshold), which still lacks the answer.
         if _ICV_HABILITACAO_RE.search(query):
             _pinned = await _pinned_search(
                 _ICV_HABILITACAO_QUERY,
@@ -909,12 +1174,30 @@ async def rag_stream(
                 embedding_provider=embedding_provider,
                 embedding_model=embedding_model,
                 source_contains=["icv"],
+                page_number=4,
                 cycle_filter=active_cycle,
             )
             if _pinned:
-                _existing = {p["parent_id"] for p in reranked_parents}
-                if _pinned[0]["parent_id"] not in _existing:
-                    reranked_parents = [_pinned[0]] + reranked_parents[:context_top_k - 1]
+                reranked_parents = _promote_pinned(reranked_parents, _pinned[0], context_top_k)
+
+        # Pinned PIBIC injection (Q06-type): same failure mode as the ICV block
+        # above — the "10 (dez) pontos" habilitação clause loses the reranker
+        # to PIBIC-EM/PIBITI sections sharing the same generic vocabulary.
+        # Guarded so it never fires for questions explicitly about a different
+        # program (PIBIC-EM/PIBITI/ICV), which have their own pinned blocks.
+        if _PIBIC_HABILITACAO_RE.search(query) and not _PIBIC_EM_PIBITI_ICV_RE.search(query):
+            _pinned_pibic = await _pinned_search(
+                _PIBIC_HABILITACAO_QUERY,
+                top_k=20,
+                payload_filter=_RAG_PAYLOAD_FILTER,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+                source_contains=["pibic"],
+                text_contains=["10 (dez) pontos"],
+                cycle_filter=active_cycle,
+            )
+            if _pinned_pibic:
+                reranked_parents = _promote_pinned(reranked_parents, _pinned_pibic[0], context_top_k)
 
         # Q05 pinned injection: "vigência das bolsas" queries retrieve the dedicated
         # "DO PERÍODO DE VIGÊNCIA DA BOLSA" section. Without pinning, the cronograma
@@ -929,16 +1212,14 @@ async def rag_stream(
                 cycle_filter=active_cycle,
             )
             if _pinned_vig:
-                _existing = {p["parent_id"] for p in reranked_parents}
-                if _pinned_vig[0]["parent_id"] not in _existing:
-                    reranked_parents = [_pinned_vig[0]] + reranked_parents[:context_top_k - 1]
+                reranked_parents = _promote_pinned(reranked_parents, _pinned_vig[0], context_top_k)
 
         # Q25 pinned injection: when query asks about vigência of all programs,
         # force one vigência chunk per non-PIBIC edital into context so the LLM
         # can enumerate all programs with full start/end/duration info.
         if _TODOS_PROGRAMAS_VIGENCIA_RE.search(query):
-            _existing = {p["parent_id"] for p in reranked_parents}
             _multi_pinned: list[dict] = []
+            _multi_pids: set[str] = set()
             for _vq, _source_keys in _VIGENCIA_MULTI_EDITAL:
                 _vq_expanded = await _pinned_search(
                     _vq,
@@ -949,11 +1230,16 @@ async def rag_stream(
                     source_contains=_source_keys,
                     cycle_filter=active_cycle,
                 )
-                if _vq_expanded and _vq_expanded[0]["parent_id"] not in _existing:
+                if _vq_expanded and _vq_expanded[0]["parent_id"] not in _multi_pids:
                     _multi_pinned.append(_vq_expanded[0])
-                    _existing.add(_vq_expanded[0]["parent_id"])
+                    _multi_pids.add(_vq_expanded[0]["parent_id"])
             if _multi_pinned:
-                reranked_parents = _multi_pinned + reranked_parents
+                # Always promote all pins to the front, deduplicated against
+                # the existing list — see _promote_pinned for why "already
+                # present but buried" must not short-circuit promotion.
+                reranked_parents = _multi_pinned + [
+                    p for p in reranked_parents if p["parent_id"] not in _multi_pids
+                ]
                 reranked_parents = reranked_parents[:context_top_k]
 
         # Q21 pinned injection: "mesmo colégio do orientador" for PIBICEM.
@@ -970,9 +1256,7 @@ async def rag_stream(
                 cycle_filter=active_cycle,
             )
             if _pc_expanded:
-                _existing = {p["parent_id"] for p in reranked_parents}
-                if _pc_expanded[0]["parent_id"] not in _existing:
-                    reranked_parents = [_pc_expanded[0]] + reranked_parents[:context_top_k - 1]
+                reranked_parents = _promote_pinned(reranked_parents, _pc_expanded[0], context_top_k)
 
         # Q14 pinned injection: ICV relatório parcial — pin Aditivo nº 2 ICV chunk to
         # context position [0] so the LLM attributes the deadline to the correct document,
@@ -994,15 +1278,9 @@ async def rag_stream(
                 cycle_filter=active_cycle,
             )
             if _ad2_expanded:
-                _pid = _ad2_expanded[0]["parent_id"]
-                # Move to position [0] even if already in the list — normal search
-                # finds the Aditivo 2 chunk but places it mid-list, so the LLM sees
-                # other documents first and cites them instead of "Aditivo nº 2".
                 # (The "ADITIVO: <label>" text prefix is now applied generically for
                 # every doc_type="aditivo" parent inside _build_context — see Fase D.)
-                reranked_parents = [_ad2_expanded[0]] + [
-                    p for p in reranked_parents if p["parent_id"] != _pid
-                ][:context_top_k - 1]
+                reranked_parents = _promote_pinned(reranked_parents, _ad2_expanded[0], context_top_k)
 
             # Second injection: ICV edital Section 13 establishes "exclusivamente via
             # SIGAA" for relatório submissions. Without it the LLM omits SIGAA because
@@ -1021,14 +1299,76 @@ async def rag_stream(
                 text_contains=["sigaa", "relat"],
                 cycle_filter=active_cycle,
             )
-            if _icv_sanc_exp:
+            if _icv_sanc_exp and reranked_parents:
+                # Always promote to position [1] (position [0] is the aditivo
+                # pin above), deduplicated — same reasoning as _promote_pinned.
                 _sanc_pid = _icv_sanc_exp[0]["parent_id"]
-                _sanc_existing = {p["parent_id"] for p in reranked_parents}
-                if _sanc_pid not in _sanc_existing and reranked_parents:
-                    reranked_parents = (
-                        [reranked_parents[0], _icv_sanc_exp[0]]
-                        + reranked_parents[1:][:context_top_k - 2]
-                    )
+                _rest = [p for p in reranked_parents[1:] if p["parent_id"] != _sanc_pid]
+                reranked_parents = (
+                    [reranked_parents[0], _icv_sanc_exp[0]] + _rest[:context_top_k - 2]
+                )
+
+        # Q03/Q10 pinned injection: see _PIBIC_DISCENTE_QUERY comment above.
+        if _PIBIC_DISCENTE_RE.search(query):
+            _pibic_disc_exp = await _pinned_search(
+                _PIBIC_DISCENTE_QUERY,
+                top_k=20,
+                payload_filter=_RAG_PAYLOAD_FILTER,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+                source_contains=["PIBIC_e_PIBIC_Af"],
+                page_number=2,
+                cycle_filter=active_cycle,
+            )
+            if _pibic_disc_exp:
+                reranked_parents = _promote_pinned(reranked_parents, _pibic_disc_exp[0], context_top_k)
+
+        # Q19 pinned injection: see _PIBITI_ORIENTACAO_QUERY comment above.
+        if _PIBITI_COORIENTADOR_RE.search(query):
+            _piti_exp = await _pinned_search(
+                _PIBITI_ORIENTACAO_QUERY,
+                top_k=20,
+                payload_filter=_RAG_PAYLOAD_FILTER,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+                source_contains=["PIBITI"],
+                doc_type="edital",
+                page_number=3,
+                # page 3 has multiple parent blocks sharing the same generic
+                # "4.1.x deveres do orientador" boilerplate; without requiring
+                # the literal word, the highest-RRF-score block is often the
+                # wrong one (see Q19 regression after enabling child overlap).
+                text_contains=["coorientador"],
+                cycle_filter=active_cycle,
+            )
+            if _piti_exp:
+                reranked_parents = _promote_pinned(reranked_parents, _piti_exp[0], context_top_k)
+
+        # Q24 pinned injection: see _ICV_PIBIC_NATUREZA_RE comment above.
+        if _ICV_PIBIC_NATUREZA_RE.search(query):
+            _natureza_pinned: list[dict] = []
+            _natureza_pids: set[str] = set()
+            for _nq, _nsrc in (
+                (_ICV_VOLUNTARIA_QUERY, "ICV"),
+                (_PIBIC_BOLSA_QUERY, "PIBIC_e_PIBIC_Af"),
+            ):
+                _n_exp = await _pinned_search(
+                    _nq,
+                    top_k=10,
+                    payload_filter=_RAG_PAYLOAD_FILTER,
+                    embedding_provider=embedding_provider,
+                    embedding_model=embedding_model,
+                    source_contains=[_nsrc],
+                    cycle_filter=active_cycle,
+                )
+                if _n_exp and _n_exp[0]["parent_id"] not in _natureza_pids:
+                    _natureza_pinned.append(_n_exp[0])
+                    _natureza_pids.add(_n_exp[0]["parent_id"])
+            if _natureza_pinned:
+                reranked_parents = _natureza_pinned + [
+                    p for p in reranked_parents if p["parent_id"] not in _natureza_pids
+                ]
+                reranked_parents = reranked_parents[:context_top_k]
 
         # ------------------------------------------------------------------ #
         # edital_ref bidirectional context expansion                         #
@@ -1124,11 +1464,7 @@ async def rag_stream(
         # ------------------------------------------------------------------ #
         stage_start = time.perf_counter()
         context_text = _build_context(reranked_parents)
-        chat_history_text = _build_history(history_msgs)
-        system_content = _SYSTEM_PROMPT.format(
-            context=context_text,
-            chat_history=chat_history_text,
-        )
+        system_content = _SYSTEM_PROMPT.format(context=context_text)
 
         messages: list[dict] = [{"role": "system", "content": system_content}]
         for msg in history_msgs:
@@ -1151,7 +1487,7 @@ async def rag_stream(
                         "messages": messages,
                         "stream": True,
                         "temperature": 0.1,
-                        "max_tokens": 1024,
+                        "max_tokens": _LLM_MAX_TOKENS,
                     },
                 ) as resp:
                     resp.raise_for_status()
@@ -1191,7 +1527,7 @@ async def rag_stream(
                         "system": anthropic_system,
                         "messages": anthropic_messages,
                         "stream": True,
-                        "max_tokens": 1024,
+                        "max_tokens": _LLM_MAX_TOKENS,
                         "temperature": 0.1,
                     },
                 ) as resp:
@@ -1231,7 +1567,7 @@ async def rag_stream(
                     params={"key": settings.GOOGLE_API_KEY, "alt": "sse"},
                     json={
                         "contents": gemini_contents,
-                        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024},
+                        "generationConfig": {"temperature": 0.1, "maxOutputTokens": _LLM_MAX_TOKENS},
                     },
                 ) as resp:
                     resp.raise_for_status()
@@ -1264,7 +1600,7 @@ async def rag_stream(
                             "model": llm_model,
                             "messages": messages,
                             "stream": True,
-                            "options": {"temperature": 0.1, "num_predict": 1024},
+                            "options": {"temperature": 0.1, "num_predict": _LLM_MAX_TOKENS},
                         },
                     ) as resp:
                         resp.raise_for_status()

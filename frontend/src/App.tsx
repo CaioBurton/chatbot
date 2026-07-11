@@ -105,7 +105,7 @@ export default function App() {
 
   return (
     <div
-      className="flex h-screen overflow-hidden bg-white dark:bg-[#1e1e1e] text-[#111] dark:text-[#e8e8e8]"
+      className="flex h-screen overflow-hidden bg-[#fdfcfa] dark:bg-[#16181c] text-[#1e2128] dark:text-[#eceae7] transition-colors"
       style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}
     >
       <Sidebar

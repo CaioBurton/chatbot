@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**PROPESQI RAG Chatbot** — an on-premise institutional Q&A system for UFPI (Universidade Federal do Piauí). Runs entirely on local hardware (NVIDIA RTX 5060 Ti 16 GB) with no external API calls. Uses retrieval-augmented generation (RAG) over institutional documents.
+**PROPESQI RAG Chatbot** — institutional Q&A system for UFPI (Universidade Federal do Piauí). Uses retrieval-augmented generation (RAG) over institutional documents (editais, resoluções, regulamentos). Supports two LLM modes: **local** (Ollama + gemma3:12b, on-premise) and **external** (Gemini, OpenAI, Anthropic via API key), switchable at runtime via the admin panel without restarting the service.
+
+Current production LLM: `gemini-3.1-flash-lite` (configured in `rag_config` DB table).
 
 See `AGENTS.md` for architecture conventions and `DOCUMENTATION.md` for full technical reference.
 
@@ -34,9 +36,9 @@ npm run build    # production build (tsc + vite build → dist/)
 ```
 
 ### Docker (full stack)
+This branch runs cloud/AWS mode only — no local Ollama, no GPU overlay. `docker-compose.yml` and `docker-compose.gpu.yml` were removed; `docker-compose.aws.yml` is the only compose file.
 ```bash
-# GPU habilitado por padrão (backend + ollama)
-docker compose up -d
+docker compose -f docker-compose.aws.yml up -d
 ```
 
 Generate `SECRET_KEY`:
@@ -59,23 +61,28 @@ Frontend (React/Vite/TS) → Nginx :3000 → /api proxy → Backend (FastAPI) :8
 **RAG Pipeline** (`backend/app/core/rag_engine.py`):
 `Query normalization → HyDE → Multi-query expansion → Hybrid Search (RRF) → Rerank → Contextual compression → LLM streaming (SSE)`
 
-| Layer            | Technology                                          |
-|------------------|-----------------------------------------------------|
-| Frontend         | React 18 + Vite + TypeScript + Tailwind CSS         |
-| Backend          | FastAPI (Python 3.11+) + SQLAlchemy 2.0 async       |
-| Relational DB    | PostgreSQL 16 (schema: `init/01_schema.sql`)        |
-| Vector DB        | Qdrant (named vectors: `dense` + `sparse`)          |
-| LLM / Embeddings | Ollama → `gemma3:12b` / `bge-m3`                   |
-| Reranker         | `BAAI/bge-reranker-v2-m3` (sentence-transformers, CPU) |
-| Sparse encoder   | fastembed BM42                                      |
-| Infrastructure   | Docker Compose + GPU overlay                        |
+| Layer            | Technology                                                          |
+|------------------|---------------------------------------------------------------------|
+| Frontend         | React 18 + Vite + TypeScript + Tailwind CSS                         |
+| Backend          | FastAPI (Python 3.11+) + SQLAlchemy 2.0 async                       |
+| Relational DB    | PostgreSQL 16 (schema: `init/01_schema.sql`)                        |
+| Vector DB        | Qdrant (named vectors: `dense` + `sparse`)                          |
+| LLM (local)      | Ollama → `gemma3:12b`                                               |
+| LLM (external)   | Gemini / OpenAI / Anthropic — switchable via `rag_config` at runtime|
+| Embeddings (local)    | `bge-m3` via Ollama                                            |
+| Embeddings (external) | Gemini `gemini-embedding-001` — switchable via `rag_config`   |
+| Reranker         | `BAAI/bge-reranker-v2-m3` (sentence-transformers, CPU on this branch)|
+| Sparse encoder   | fastembed BM42 (CPU)                                                |
+| Rate limiter     | slowapi (5 req/min on `/chat/stream`, 20 req/min on `/chat/sessions`)|
+| Infrastructure   | Docker Compose (`docker-compose.aws.yml`) — no GPU/Ollama on this branch|
 
 ### Key Files
 
-- `backend/app/main.py` — FastAPI app entry point, lifespan setup
+- `backend/app/main.py` — FastAPI app entry point, lifespan setup, rate limiter registration
 - `backend/app/core/config.py` — Settings (singleton via `@lru_cache`)
 - `backend/app/core/rag_engine.py` — Full RAG pipeline with SSE streaming
 - `backend/app/core/security.py` — JWT auth (access 60 min / refresh 7 days)
+- `backend/app/core/limiter.py` — slowapi rate limiter (key: X-Real-IP from nginx)
 - `backend/app/core/progress.py` — SSE indexing progress publisher
 - `backend/app/db/qdrant.py` — Qdrant collection management + named vector constants
 - `backend/app/db/postgres.py` — `AsyncSessionLocal` factory
@@ -84,10 +91,18 @@ Frontend (React/Vite/TS) → Nginx :3000 → /api proxy → Backend (FastAPI) :8
 - `frontend/nginx.conf` — Nginx reverse proxy (`/api` → backend:8000)
 - `init/01_schema.sql` — Database schema init
 
+### Evaluation & TCC
+
+- `backend/tests/groundtruth_chatbot_rag.csv` — original 30-question ground truth
+- `backend/tests/groundtruth_chatbot_rag_ampliado.csv` — expanded 90-question ground truth (added at step 25, run alongside the original set on every step since to catch regressions the smaller set misses)
+- `backend/tests/run_groundtruth_eval.py` — evaluation runner (supports `--judge gemini` and `--judge ollama`)
+- `backend/tests/relatorio_otimizacao_rag.md` — full optimization cycle report (33 steps). Baseline (bge-m3 local embeddings): 3.63/5. Migrating embeddings to Gemini for the cloud deploy erased most of that gain, forcing a new baseline at step 20 (4.073/5) under the all-Gemini pipeline. Current production config (step 32; step 33 was tested and reverted): **4.463/5 (89.3%)** on the original 30-question set, **3.826/5 (76.5%)** on the expanded 90-question set.
+- `backend/tests/groundtruth_chatbot_rag_resultados_passo*.csv` / `..._ampliado_resultados_passo*.csv` — per-step evaluation results for each golden-set
+
 ### API Routes
 
 - `/api/auth/*` — Login, token refresh (public)
-- `/api/chat/*` — Q&A streaming (public, no auth)
+- `/api/chat/*` — Q&A streaming (public, rate-limited)
 - `/api/documents/*` — Upload, manage, reindex documents (JWT required)
 - `/api/admin/*` — RAG config and stats panel (JWT required)
 - `/api/evaluation/*` — RAGAS evaluation metrics (JWT required)
@@ -112,7 +127,12 @@ Always call `get_settings()`. Never instantiate `Settings()` directly. `SECRET_K
 All DB interactions must use `AsyncSession` + `asyncpg`. Never mix in synchronous `psycopg2` calls.
 
 ### RAG Config — Runtime-Adjustable
-Reranker threshold, HyDE temperature, and other RAG parameters are stored in PostgreSQL and read via `app/db/rag_config.py`. The admin panel modifies them without restarting the service.
+`llm_provider`, `llm_model`, reranker threshold, HyDE temperature, and other RAG parameters are stored in PostgreSQL and read via `app/db/rag_config.py`. The admin panel modifies them without restarting the service. To change the LLM, update the DB directly or use the admin panel — do not hardcode model names in the source.
+
+### Rate Limiting
+`app/core/limiter.py` uses slowapi with `X-Real-IP` as the key (set by nginx). The limits are applied in `app/api/routes/chat.py`. Clients behind the same NAT share a single bucket — intended behavior for the institutional use case.
+
+The limiter as a whole can be disabled via `RATE_LIMIT_ENABLED=false` (`Settings`, default `true`) — this is only for a controlled local `run_groundtruth_eval.py` run (pair with `EVAL_CHAT_STREAM_INTERVAL=0` to also skip the harness's own pacing). Always revert to `true` and restart the backend before serving real traffic; never leave it `false` in production.
 
 ### Indexing Progress
 Publish progress events via `app/core/progress.py` (SSE). The frontend consumes them over `/ws`. Do not use `print()` or logging to report indexing progress to the client.
@@ -123,8 +143,8 @@ Publish progress events via `app/core/progress.py` (SSE). The frontend consumes 
 ### Dependencies
 - `bcrypt` is pinned to `>=3.0,<4.0` in `requirements.txt`. bcrypt 4+ has a different API that breaks `passlib`. Do not upgrade without testing.
 - fastembed BM42 downloads ~100 MB on first run. In offline environments, pre-download or mount the cache as a Docker volume.
-- RAGAS evaluation (`/api/evaluation/*`) calls Ollama internally. Do not run evaluations when Ollama is unavailable.
+- RAGAS evaluation (`/api/evaluation/*`) calls the configured LLM provider internally. Ensure the active `llm_provider` is reachable before running evaluations.
 - Ollama runs with `OLLAMA_NUM_PARALLEL=1` to prevent concurrent inference OOM on the 16 GB VRAM GPU.
 
 ### OCR
-PDFs with scanned images go through OpenCV + Tesseract. Upload timeouts should be set well above 5 minutes for large scanned PDFs.
+PDFs with scanned images go through the LLMWhisperer cloud API (`app/ingestion/extractors/ocr.py`) — no local Tesseract/OpenCV. Requires `LLMWHISPERER_API_KEY`. OCR runs inside a `BackgroundTasks` job (`process_document`), not inline in the upload request, so HTTP/nginx timeouts don't constrain it.

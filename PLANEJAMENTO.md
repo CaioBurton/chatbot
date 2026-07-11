@@ -1,6 +1,15 @@
 # Planejamento — RAG Chatbot PROPESQI / UFPI
 
-> **Objetivo:** Sistema de perguntas e respostas sobre documentos internos da
+> **⚠️ Documento histórico.** Este é o planejamento original do projeto,
+> anterior à implementação e à migração para deploy cloud/AWS. Diverge da
+> implementação atual em vários pontos (ex.: OCR aqui é Tesseract+OpenCV
+> local, na implementação real é a API cloud LLMWhisperer; a stack de IA
+> aqui é 100% Ollama/GPU, a branch `feature/aws-gemini-deploy` roda 100%
+> Gemini sem GPU/Ollama; o roadmap da seção 12 nunca foi marcado). Mantido
+> como registro histórico de decisão. **Para o estado atual do sistema, use
+> [DOCUMENTATION.md](DOCUMENTATION.md) e [CLAUDE.md](CLAUDE.md).**
+
+> **Objetivo original:** Sistema de perguntas e respostas sobre documentos internos da
 > Pró-Reitoria de Pesquisa e Inovação (PROPESQI) da UFPI, rodando inteiramente
 > on-premise, com LLM local na GPU NVIDIA RTX 5060 Ti 16 GB VRAM.
 
@@ -556,8 +565,7 @@ propesqi-chatbot/
 │   ├── package.json
 │   └── Dockerfile
 │
-├── docker-compose.yml
-├── docker-compose.gpu.yml           # override com GPU passthrough
+├── docker-compose.aws.yml           # único compose file na branch feature/aws-gemini-deploy
 ├── .env.example
 └── PLANEJAMENTO.md
 ```

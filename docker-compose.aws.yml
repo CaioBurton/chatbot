@@ -1,7 +1,8 @@
-# PROPESQI RAG Chatbot — Docker Compose (GPU mode — NVIDIA RTX 5060 Ti 16 GB)
-# Prerequisites: nvidia-container-toolkit installed and Docker daemon configured.
-# GPU is enabled by default for backend and ollama via deploy.resources.reservations.
-# Usage: docker compose up -d
+# PROPESQI RAG Chatbot — Docker Compose (AWS / CPU-only, Gemini for LLM + embeddings)
+# No Ollama service, no GPU reservations — LLM and dense embeddings are both
+# served by the Gemini API. The reranker (BAAI/bge-reranker-v2-m3) and the
+# BM42 sparse encoder still run locally on CPU (see backend/Dockerfile.cloud).
+# Usage: docker compose -f docker-compose.aws.yml up -d
 
 services:
 
@@ -11,8 +12,6 @@ services:
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
-    ports:
-      - "5432:5432"   # expõe para o host
     container_name: propesqi_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -29,8 +28,6 @@ services:
     networks:
       - propesqi-net
     healthcheck:
-      # Uses container-env vars ($$VAR) to avoid leaking credentials into
-      # compose parse-time substitution while still being dynamic.
       test:
         [
           "CMD-SHELL",
@@ -54,7 +51,7 @@ services:
     environment:
       # Keep sparse index hot in memory for latency (change to true if RAM is scarce)
       QDRANT__STORAGE__SPARSE_VECTORS_ON_DISK: "false"
-      # Disable telemetry in on-premise deployment
+      # Disable telemetry
       QDRANT__TELEMETRY_DISABLED: "true"
       # API key authentication — prevents unauthorized access from other containers
       QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
@@ -77,65 +74,18 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Ollama — local LLM + embedding server (GPU mode)
-  # bge-m3 ~1.1 GiB + gemma3:12b Q4_K_M ~7.7 GiB = ~8.8 GiB, well within 16 GiB VRAM.
-  # Port 11434 is internal only.
-  # ---------------------------------------------------------------------------
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    container_name: propesqi_ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      # Set to 2 so both models stay loaded simultaneously (no reload delay between calls).
-      - OLLAMA_MAX_LOADED_MODELS=2
-      # Serialise inference requests so concurrent calls don't thrash the GPU.
-      - OLLAMA_NUM_PARALLEL=1
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - propesqi-net
-    healthcheck:
-      # Ollama image has no curl/wget; use bash /dev/tcp to probe port 11434
-      test:
-        [
-          "CMD-SHELL",
-          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/11434 && exec 3>&-' 2>/dev/null",
-        ]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # Backend — FastAPI + RAG pipeline
-  # Waits for all three infrastructure services to be healthy before starting.
+  # Backend — FastAPI + RAG pipeline (CPU-only image)
+  # LLM + dense embeddings come from the Gemini API (GOOGLE_API_KEY).
+  # Reranker + BM42 sparse encoder run locally on CPU — no GPU needed.
+  # Waits for postgres and qdrant to be healthy before starting.
   # Port 8000 is internal only; frontend proxies requests via internal network.
   # ---------------------------------------------------------------------------
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.cloud
     container_name: propesqi_backend
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     environment:
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
       QDRANT_URL: ${QDRANT_URL}
       DATABASE_URL: ${DATABASE_URL}
       SECRET_KEY: ${SECRET_KEY}
@@ -145,12 +95,20 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
       # Must match QDRANT__SERVICE__API_KEY set on the qdrant service
       QDRANT_API_KEY: ${QDRANT_API_KEY}
-      # Proprietary LLM API keys (optional — only required when llm_provider != 'local')
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # Required in this mode — LLM + embeddings both use Gemini
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      # LLMWhisperer — cloud OCR for scanned PDFs (required to process them)
+      LLMWHISPERER_API_KEY: ${LLMWHISPERER_API_KEY}
       # Fine-tuned reranker model path (optional — falls back to BAAI/bge-reranker-v2-m3)
       RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      # Max documents ingested at once (optional — defaults to 1; raise on bigger instances)
+      MAX_CONCURRENT_INGESTIONS: ${MAX_CONCURRENT_INGESTIONS:-1}
+      # Max /chat/stream requests processed at once (optional — defaults to 3;
+      # lower on small CPU-only instances to avoid OOM under concurrent load)
+      MAX_CONCURRENT_CHAT_REQUESTS: ${MAX_CONCURRENT_CHAT_REQUESTS:-3}
+      # Disables /chat/stream and /chat/sessions rate limiting when false.
+      # Only for controlled eval runs — must stay true in production.
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
     volumes:
       # Persistent storage for uploaded documents — survives container restarts
       - uploads_data:/app/uploads
@@ -162,8 +120,6 @@ services:
       postgres:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     networks:
       - propesqi-net
@@ -204,16 +160,12 @@ services:
       - propesqi-net
     restart: unless-stopped
 
-  # Unreachable placeholder — nginx inside frontend proxies /api/ to backend:8000
-  # so the browser never needs to reach port 8000 directly.
-
 # =============================================================================
 # Named volumes — data persists across container restarts / rebuilds
 # =============================================================================
 volumes:
   postgres_data:
   qdrant_data:
-  ollama_data:
   # Stores raw uploaded files — persists across backend rebuilds/restarts
   uploads_data:
 

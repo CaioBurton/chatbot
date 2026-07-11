@@ -247,7 +247,7 @@ INSERT INTO rag_config (id, parent_chunk_tokens, child_chunk_tokens, search_top_
                         contextual_compression_enabled, parent_child_expansion_enabled,
                         llm_provider, llm_model, embedding_provider, embedding_model,
                         child_chunk_overlap_tokens, updated_at)
-VALUES (1, 512, 128, 20, 0.0, 5, 0.5, TRUE, TRUE, TRUE, TRUE, TRUE, 'local', 'gemma3:12b', 'local', 'bge-m3',
+VALUES (1, 512, 128, 20, 0.0, 5, 0.5, TRUE, TRUE, TRUE, TRUE, TRUE, 'gemini', 'gemini-3.1-flash-lite', 'gemini', 'gemini-embedding-001',
         24, NOW())
 ON CONFLICT (id) DO NOTHING;
 

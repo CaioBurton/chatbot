@@ -63,19 +63,19 @@ function FileEntryRow({
   const latestEvent = events[events.length - 1]
 
   return (
-    <li className="rounded-lg border border-[#ddd] dark:border-[#444] bg-white dark:bg-[#1e1e1e] px-4 py-2 animate-fade-in">
+    <li className="rounded-lg border border-[#e6e1d5] dark:border-[#33383f] bg-white dark:bg-[#1d2126] px-4 py-2 animate-fade-in">
       <div className="flex items-center justify-between text-sm">
-        <span className="max-w-[70%] overflow-hidden text-ellipsis whitespace-nowrap text-[#111] dark:text-[#e8e8e8] flex items-center gap-2">
-          <FileText size={14} className="shrink-0 text-[#0078d4]" />
+        <span className="max-w-[70%] overflow-hidden text-ellipsis whitespace-nowrap text-[#1e2128] dark:text-[#eceae7] flex items-center gap-2">
+          <FileText size={14} className="shrink-0 text-[#2c4a86] dark:text-[#8596b9]" />
           {entry.name}
         </span>
         <span
           className={
             entry.status === 'done'
-              ? 'text-green-600 dark:text-green-400 flex items-center gap-1'
+              ? 'text-[#1f9a5a] dark:text-[#4cbd82] flex items-center gap-1'
               : entry.status === 'error'
-                ? 'text-red-600 dark:text-red-400 flex items-center gap-1'
-                : 'text-[#777] dark:text-[#aaa] flex items-center gap-1'
+                ? 'text-[#c0392b] dark:text-[#e0685c] flex items-center gap-1'
+                : 'text-[#6c7078] dark:text-[#9da2aa] flex items-center gap-1'
           }
         >
           {entry.status === 'uploading' ? (
@@ -98,9 +98,9 @@ function FileEntryRow({
 
       {/* XHR upload progress bar */}
       {entry.status === 'uploading' && !isIndexing && (
-        <div className="mt-1 h-1 w-full overflow-hidden rounded bg-[#eee] dark:bg-[#444]">
+        <div className="mt-1 h-1 w-full overflow-hidden rounded bg-[#f2efe8] dark:bg-[#262b32]">
           <div
-            className="h-full rounded bg-[#0078d4] transition-all"
+            className="h-full rounded bg-[#2c4a86] dark:bg-[#8596b9] transition-all"
             style={{ width: `${entry.progress}%` }}
           />
         </div>
@@ -108,9 +108,9 @@ function FileEntryRow({
 
       {/* Indexing step progress bar */}
       {isIndexing && (
-        <div className="mt-1 h-1 w-full overflow-hidden rounded bg-[#eee] dark:bg-[#444]">
+        <div className="mt-1 h-1 w-full overflow-hidden rounded bg-[#f2efe8] dark:bg-[#262b32]">
           <div
-            className="h-full rounded bg-[#0078d4] transition-all"
+            className="h-full rounded bg-[#2c4a86] dark:bg-[#8596b9] transition-all"
             style={{ width: `${latestEvent ? latestEvent.progress : 0}%` }}
           />
         </div>
@@ -118,15 +118,15 @@ function FileEntryRow({
 
       {/* Latest step description */}
       {isIndexing && latestEvent && (
-        <p className="mt-1 text-xs text-[#555] dark:text-[#aaa]">{latestEvent.detail}</p>
+        <p className="mt-1 text-xs text-[#6c7078] dark:text-[#9da2aa]">{latestEvent.detail}</p>
       )}
 
       {entry.message && (
         <p
           className={`mt-1 text-xs ${
             entry.status === 'error'
-              ? 'text-red-600 dark:text-red-400'
-              : 'text-[#555] dark:text-[#aaa]'
+              ? 'text-[#c0392b] dark:text-[#e0685c]'
+              : 'text-[#6c7078] dark:text-[#9da2aa]'
           }`}
         >
           {entry.message}
@@ -266,21 +266,21 @@ export default function UploadZone({ onUploaded }: Props) {
         onDragLeave={onDragLeave}
         onClick={() => inputRef.current?.click()}
         onKeyDown={e => e.key === 'Enter' && inputRef.current?.click()}
-        className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
+        className={`flex cursor-pointer flex-col items-center justify-center rounded-[16px] border-2 border-dashed px-6 py-10 text-center transition-colors ${
           dragging
-            ? 'border-[#0078d4] bg-[#e3f2fd] dark:bg-[#1a4a6e]/30'
-            : 'border-[#ccc] dark:border-[#555] bg-[#fafafa] dark:bg-[#2d2d2d] hover:border-[#0078d4]'
+            ? 'border-[#2c4a86] dark:border-[#8596b9] bg-[#e8edf7] dark:bg-[#182236]'
+            : 'border-[#e6e1d5] dark:border-[#33383f] bg-white dark:bg-[#1d2126] hover:border-[#2c4a86] dark:hover:border-[#8596b9]'
         }`}
       >
         <UploadCloud
           size={36}
-          className={`mb-2 transition-transform ${dragging ? 'text-[#0078d4] scale-110' : 'text-[#aaa] dark:text-[#666]'}`}
+          className={`mb-2 transition-transform ${dragging ? 'text-[#2c4a86] dark:text-[#8596b9] scale-110' : 'text-[#a19e96] dark:text-[#6c717a]'}`}
         />
-        <p className="text-sm text-[#555] dark:text-[#aaa]">
+        <p className="text-sm text-[#6c7078] dark:text-[#9da2aa]">
           Arraste PDFs aqui ou{' '}
-          <span className="text-[#0078d4] underline">clique para selecionar</span>
+          <span className="text-[#2c4a86] dark:text-[#8596b9] underline">clique para selecionar</span>
         </p>
-        <p className="mt-1 text-xs text-[#888] dark:text-[#666]">
+        <p className="mt-1 text-xs text-[#a19e96] dark:text-[#6c717a]">
           Apenas PDF · máximo 50 MB por arquivo
         </p>
         <input

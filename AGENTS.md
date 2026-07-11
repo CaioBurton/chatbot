@@ -1,14 +1,20 @@
 # AGENTS.md — PROPESQI RAG Chatbot
 
-Sistema de Q&A sobre documentos institucionais da PROPESQI/UFPI, executado
-inteiramente on-premise com LLM local (gemma3:12b) numa NVIDIA RTX 5060 Ti 16 GB.
+Sistema de Q&A sobre documentos institucionais da PROPESQI/UFPI. Suporta dois
+modos de LLM/embedding — local (Ollama + `gemma3:12b` + `bge-m3`, on-premise
+com GPU) e externo (Gemini/OpenAI/Anthropic), comutáveis em runtime via
+`rag_config`. **A branch `feature/aws-gemini-deploy` roda exclusivamente em
+modo cloud/AWS**: sem Ollama, sem GPU, LLM e embeddings de produção via
+Gemini (`gemini-3.1-flash-lite` / `gemini-embedding-001`).
 
 Consulte [DOCUMENTATION.md](DOCUMENTATION.md) para a referência técnica completa
-e [PLANEJAMENTO.md](PLANEJAMENTO.md) para decisões de arquitetura e modelos.
+e [PLANEJAMENTO.md](PLANEJAMENTO.md) para o planejamento original do projeto
+(documento histórico, anterior à migração para AWS/Gemini — pode divergir da
+implementação atual).
 
 ---
 
-## Arquitetura
+## Arquitetura (branch `feature/aws-gemini-deploy`)
 
 | Camada              | Tecnologia                                 |
 |---------------------|--------------------------------------------|
@@ -16,10 +22,11 @@ e [PLANEJAMENTO.md](PLANEJAMENTO.md) para decisões de arquitetura e modelos.
 | Backend             | FastAPI (Python 3.11+) + SQLAlchemy async  |
 | Banco relacional    | PostgreSQL 16 (`init/01_schema.sql`)       |
 | Vector DB           | Qdrant (named vectors: `dense` + `sparse`) |
-| LLM / Embeddings    | Ollama → `gemma3:12b` / `bge-m3`          |
+| LLM (produção)      | Gemini `gemini-3.1-flash-lite`             |
+| Embeddings (produção)| Gemini `gemini-embedding-001`             |
 | Reranker            | `BAAI/bge-reranker-v2-m3` (sentence-transformers, CPU) |
-| Encoder esparso     | fastembed BM42                             |
-| Infraestrutura      | Docker Compose + overlay GPU               |
+| Encoder esparso     | fastembed BM42 (CPU)                       |
+| Infraestrutura      | Docker Compose (`docker-compose.aws.yml`) — sem GPU/Ollama |
 
 Pipeline RAG (`backend/app/core/rag_engine.py`):
 `Normalização → HyDE → Multi-query → Hybrid Search (RRF) → Rerank → Compressão contextual → LLM streaming`
@@ -49,13 +56,10 @@ npm run dev      # servidor de desenvolvimento
 npm run build    # build de produção (tsc + vite build)
 ```
 
-### Docker (produção com GPU)
+### Docker (modo cloud/AWS)
+Esta branch roda apenas em modo cloud/AWS — sem Ollama, sem GPU. `docker-compose.yml` e `docker-compose.gpu.yml` foram removidos.
 ```bash
-# Subir toda a stack com suporte a GPU
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-
-# Apenas CPU
-docker compose up -d
+docker compose -f docker-compose.aws.yml up -d
 ```
 
 ---
@@ -118,9 +122,9 @@ antes de importar qualquer módulo da app.
 | `DATABASE_URL`              | PostgreSQL asyncpg URL                  |
 | `QDRANT_URL`                | URL do Qdrant                           |
 | `QDRANT_API_KEY`            | Chave de API do Qdrant                  |
-| `OLLAMA_BASE_URL`           | URL base do Ollama                      |
 | `SECRET_KEY`                | Segredo JWT (≥ 32 chars)                |
-| `POSTGRES_USER/PASSWORD/DB` | Usadas pelo `docker-compose.yml`        |
+| `GOOGLE_API_KEY`            | Chave Gemini — LLM e embeddings de produção nesta branch |
+| `POSTGRES_USER/PASSWORD/DB` | Usadas pelo `docker-compose.aws.yml`    |
 | `PROPESQI_APP_PASSWORD`     | Senha da role de aplicação PostgreSQL   |
 
 Gere `SECRET_KEY` com:
@@ -137,7 +141,12 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
   dados indexados são perdidos. Faça backup antes de migrar.
 - **bcrypt versão**: `requirements.txt` fixa `bcrypt>=3.0,<4.0`. bcrypt 4+
   tem API diferente; não atualize sem testar `passlib`.
-- **OCR lento**: PDFs digitalizados passam por OpenCV + Tesseract.
-  Timeout de upload deve ser alto (> 5 min para PDFs grandes).
-- **RAGAS requer LLM**: `app/api/routes/evaluation.py` chama o Ollama para
-  métricas RAGAS. Não execute avaliações quando o Ollama não estiver disponível.
+- **OCR via API cloud**: PDFs digitalizados são enviados para a API
+  LLMWhisperer (`LLMWHISPERER_API_KEY`), sem Tesseract/OpenCV local. Roda em
+  background task, fora do request de upload.
+- **RAGAS está hardcoded para Ollama**: `app/core/evaluator.py` usa
+  `ChatOllama`/`OllamaEmbeddings` diretamente, **ignorando o `llm_provider`
+  configurado em `rag_config`**. Nesta branch (`feature/aws-gemini-deploy`,
+  sem serviço Ollama) o endpoint `/api/evaluation/*` (RAGAS) não funciona —
+  não confundir com o harness `run_groundtruth_eval.py`, que é
+  provider-agnostic e é o usado para a avaliação real do TCC.

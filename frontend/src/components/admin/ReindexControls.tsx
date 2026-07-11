@@ -36,13 +36,13 @@ export default function ReindexControls({ onReindexed }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap gap-2">
+    <div className="flex flex-col gap-3.5">
+      <div className="flex flex-wrap gap-2.5">
         <button
           type="button"
           disabled={loadingPending || loadingAll}
           onClick={() => reindex('pending').catch(console.error)}
-          className="rounded-lg border border-[#0078d4] bg-transparent px-4 py-2 text-sm text-[#0078d4] hover:bg-[#e3f2fd] dark:hover:bg-[#1a4a6e] disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
+          className="flex cursor-pointer items-center gap-1.5 rounded-[10px] border-[1.5px] border-[#2c4a86] dark:border-[#8596b9] bg-transparent px-4 py-[9px] text-[13.5px] font-semibold text-[#2c4a86] dark:text-[#8596b9] transition-colors hover:bg-[#e8edf7] dark:hover:bg-[#182236] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {loadingPending ? (
             <><Loader2 size={14} className="animate-spin" />Enfileirando…</>
@@ -56,20 +56,20 @@ export default function ReindexControls({ onReindexed }: Props) {
             type="button"
             disabled={loadingPending || loadingAll}
             onClick={() => setConfirmAll(true)}
-            className="rounded-lg border border-red-500 bg-transparent px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
+            className="flex cursor-pointer items-center gap-1.5 rounded-[10px] border-[1.5px] border-[#c0392b] dark:border-[#e0685c] bg-transparent px-4 py-[9px] text-[13.5px] font-semibold text-[#c0392b] dark:text-[#e0685c] transition-colors hover:bg-[#fbeae7] dark:hover:bg-[#3a1f1c] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <AlertTriangle size={14} />Reindexação total
           </button>
         ) : (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-red-600 dark:text-red-400">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="text-sm text-[#c0392b] dark:text-[#e0685c]">
               Apaga todos os vetores. Confirmar?
             </span>
             <button
               type="button"
               disabled={loadingAll}
               onClick={() => { setConfirmAll(false); reindex('all').catch(console.error) }}
-              className="rounded-lg border border-red-500 bg-red-500 px-3 py-1.5 text-sm text-white hover:bg-red-600 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed flex items-center gap-1.5 transition-colors"
+              className="flex cursor-pointer items-center gap-1.5 rounded-[9px] border-0 bg-[#c0392b] px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#a8321f] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loadingAll ? <Loader2 size={14} className="animate-spin" /> : null}
               Sim, reindexar
@@ -77,7 +77,7 @@ export default function ReindexControls({ onReindexed }: Props) {
             <button
               type="button"
               onClick={() => setConfirmAll(false)}
-              className="rounded-lg border border-gray-400 bg-transparent px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer transition-colors"
+              className="cursor-pointer rounded-[9px] border border-[#e6e1d5] dark:border-[#33383f] bg-transparent px-3.5 py-2 text-sm text-[#6c7078] dark:text-[#9da2aa] transition-colors hover:bg-[#eae6dc] dark:hover:bg-[#2c313a]"
             >
               Cancelar
             </button>
@@ -86,10 +86,10 @@ export default function ReindexControls({ onReindexed }: Props) {
       </div>
 
       {result && (
-        <p className="text-sm text-green-700 dark:text-green-400">{result}</p>
+        <p className="text-sm text-[#1f9a5a] dark:text-[#4cbd82]">{result}</p>
       )}
       {error && (
-        <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+        <p className="text-sm text-[#c0392b] dark:text-[#e0685c]">{error}</p>
       )}
     </div>
   )

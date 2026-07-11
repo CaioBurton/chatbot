@@ -37,6 +37,18 @@ class DocumentListItem(BaseModel):
     created_at: datetime
 
 
+class DocumentMetadataUpdate(BaseModel):
+    """Full replacement of a document's classification metadata — mirrors
+    the upload form fields. Not a sparse PATCH: the admin UI always submits
+    all three together, so there's no ambiguity between "field omitted" and
+    "field cleared" (edital_ref/edital_cycle are simply set to whatever is
+    submitted, empty string clears them)."""
+
+    doc_type: _DocType
+    edital_ref: str | None = None
+    edital_cycle: str | None = None
+
+
 class DocumentDetail(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

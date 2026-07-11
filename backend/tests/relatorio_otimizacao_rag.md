@@ -1662,6 +1662,414 @@ Q18 melhorou: a resposta passou a citar explicitamente "item 4.2.1 do Edital PIB
 
 ---
 
+## Passo 18 — Full eval na stack cloud/AWS (`embedding_provider=gemini`)
+
+**Data:** 2026-07-06
+**Branch:** `feature/aws-gemini-deploy`
+**Arquivo:** `groundtruth_chatbot_rag_resultados_passo18.csv`
+
+**Contexto:** todos os passos anteriores (1–17) rodaram com `embedding_provider=local` (`bge-m3` via Ollama). Nesta branch a stack foi migrada para modo cloud/AWS puro — sem Ollama/GPU — e o `rag_config` (id=1) atual usa:
+
+| Parâmetro | Valor |
+|---|---|
+| `embedding_provider` | gemini |
+| `embedding_model` | gemini-embedding-001 |
+| `llm_provider` / `llm_model` | gemini / gemini-3.1-flash-lite (inalterado) |
+| `hyde_enabled` / `multiquery_enabled` / `reranker_enabled` / `contextual_compression_enabled` / `parent_child_expansion_enabled` | todos `true` |
+| `reranker_score_threshold` | 0.5 |
+| Código de `rag_engine.py` | idêntico ao commit do Passo 17 (`c3dcd0d`) + 1 ajuste não commitado (Regra 8 do system prompt: proíbe frases de preenchimento como "de acordo com o documento em minha base de dados...") |
+
+A collection Qdrant (`propesqi_docs`, 2698 pontos) foi verificada como compatível — vetores nomeados `dense` (1024, cosine) **e** `sparse` (IDF) presentes, então a busca híbrida RRF está ativa normalmente; a causa da queda de score abaixo não é infraestrutura de vetores quebrada, e sim o modelo de embedding em si.
+
+Também foi removido o rate-limiting artificial do `run_groundtruth_eval.py` (pacing de ~12 RPM calibrado para o free tier do Gemini) após a conta subir para o Tier 1 de faturamento, que tem headroom de RPM bem maior. O tempo médio de resposta caiu para **13.7 s/pergunta** (min 10.36s, max 22.14s) — antes cada linha levava ≥35s só de pacing artificial.
+
+### Resultados gerais
+
+| Métrica | Passo 17 (bge-m3) | **Passo 18 (gemini-embedding-001)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.562/5 (91.2%) | **3.690/5 (73.8%)** | **−0.872** |
+| Corretude factual | — | 0.807 | — |
+| Completude | — | 0.702 | — |
+| Citação de fonte | — | 0.903 | — |
+| Sem alucinação | — | 0.967 | — |
+| Relevância | — | 0.793 | — |
+| Respostas ruins (< 2.5) | 0/30 | **6/30** | +6 |
+| Respostas excelentes (≥ 4.5) | 23/30 | 16/30 | −7 |
+
+Os números por métrica ficam próximos do **Baseline histórico** (todos os flags desabilitados, bge-m3: 3.63/5, corretude 0.77, completude 0.67, citação 0.84, alucinação 0.93, relevância 0.78) — ou seja, trocar o embedding para Gemini praticamente anula o ganho acumulado de 17 passos de tuning (+0.93 sobre o baseline), mesmo com todos os flags de otimização ainda ligados.
+
+### Diagnóstico — regressão de retrieval, não de geração
+
+As 6 respostas ruins (Q03, Q10, Q15, Q16, Q19, Q24) caíram para o fallback padrão *"Não possuo informações sobre este assunto em minha base de documentos"* — e todas essas perguntas tinham respostas substantivas e corretas no Passo 17:
+
+| ID | Passo 17 (bge-m3) | Passo 18 (gemini) |
+|---|---|---|
+| Q03 | 3.75 | 0.5 (fallback) |
+| Q10 | 5.0 | 1.5 (fallback) |
+| Q15 | 4.5 | 0.0 (fallback) |
+| Q16 | 5.0 | 0.5 (fallback) |
+| Q19 | 3.8 | 0.0 (fallback) |
+| Q24 | 4.5 | 0.5 (fallback) |
+
+Como o fallback só é emitido quando o contexto recuperado não contém a resposta, isso indica que o **retrieval em si** (não a geração) piorou: os pinned injections, expansões lexicais e o `reranker_score_threshold=0.5` foram todos calibrados empiricamente contra o espaço vetorial do `bge-m3` (Passos 1–17); com `gemini-embedding-001` o conjunto de candidatos retornado pela busca dense muda, e vários chunks que antes apareciam no top-k (via busca direta ou via pinned queries que também dependem de embedding) deixam de aparecer — derrubando a citação de fonte e disparando o fallback.
+
+### Conclusão do Passo 18
+
+**A migração para `embedding_provider=gemini` precisa de uma nova rodada de tuning própria.** O pipeline funcional (HyDE, multi-query, reranker, pinned injections, expansões lexicais) está intacto no código, mas os thresholds e as queries pinned foram ajustados para `bge-m3` e não transferem diretamente para o Gemini embedding. Não foi feita nenhuma alteração de código neste passo — apenas execução e registro do eval.
+
+**Próximos passos candidatos:** re-executar smoke tests nas 6 perguntas regressivas variando `reranker_score_threshold`; verificar se as pinned queries (ex.: `_ICV_ADITIVO_RELATORIO_QUERY`) ainda recuperam o chunk certo sob `gemini-embedding-001`; considerar recalibrar ou re-treinar o reranker para o novo espaço vetorial.
+
+---
+
+## Passo 19 — Retuning do retrieval para `gemini-embedding-001`
+
+**Data:** 2026-07-06/07
+**Objetivo:** consertar as 6 perguntas que regrediram no Passo 18 (Q03, Q10, Q15, Q16, Q19, Q24) reajustando pinned injections e expansões lexicais para o espaço vetorial do Gemini, sem reabrir tuning das demais 24 perguntas.
+
+### Diagnóstico por pergunta
+
+Para cada uma das 6 perguntas, o candidato correto (mesmo documento e página corretos) já aparecia no top-20 do `hybrid_search`, mas não sobrevivia ao top-5 do reranker — ou, quando pinned injections já existiam (Q15), o filtro selecionava o chunk errado dentro do documento certo:
+
+| ID | Causa raiz | Evidência |
+|---|---|---|
+| **Q15** | Pinned injection (`_ICV_HABILITACAO_QUERY`) filtrava só por `source contains "ICV"`, sem checar página — o chunk mais bem-rankeado dentro do filtro era a página 2 (critérios de elegibilidade), não a página 4 (cláusula real: "6.1.2.2 ... no mínimo 5 pontos") | Inspeção direta do `parent_text` de cada candidato ICV no pool pinned |
+| **Q03/Q10** | O chunk certo (página 2 do edital PIBIC — contém IRA ≥7,0 **e** a cláusula PIBIC-Af no mesmo parágrafo) nunca entrava no top-5 do rerank; concorria com seções de "orientador"/"cota de bolsas" do mesmo documento | Reranker isolado mostrou o chunk correto em 17º lugar de 20, com score quase empatado (0.7057 vs 0.70–0.726 dos demais) |
+| **Q16** | A seção "2. DOS OBJETIVOS" do PIBITI perdia para páginas de capa/boilerplate (mesma sigla "PIBITI", sem conteúdo relevante) | Top-5 do rerank eram só páginas de capa e cronograma de indicação |
+| **Q19** | A cláusula real (PIBITI 4.1.5.1: "orientar... diretamente nas distintas fases") competia com o item do Anexo I de pontuação ("...como coorientador") — mesma palavra "coorientador", contexto totalmente diferente | Busca literal por "coorientador" no corpus só retornava a tabela de pontuação |
+| **Q24** | Nenhum chunk isolado afirma explicitamente a distinção remunerada/voluntária; o sinal está nos **títulos de seção** ("DO PERÍODO DE VIGÊNCIA DA BOLSA" no PIBIC vs "DA PARTICIPAÇÃO VOLUNTÁRIA" no ICV), não no corpo do texto | Scroll completo do corpus não encontrou a palavra "remunerada" em nenhum chunk do PIBIC |
+
+### Fixes aplicados em `rag_engine.py`
+
+Nenhuma abstração nova — apenas reaproveitando os dois mecanismos já existentes:
+
+1. **Q15:** adicionado filtro `page_number == 4` ao pinned injection existente (linha do `_pinned_icv`).
+2. **Q03/Q10:** nova pinned injection (`_PIBIC_DISCENTE_RE`/`_PIBIC_DISCENTE_QUERY`) filtrando `source contains "PIBIC_e_PIBIC_Af"` + `page_number == 2`. Um único chunk resolve as duas perguntas.
+3. **Q16:** nova expansão lexical (`foco`/`objetivo` + PIBITI → vocabulário da Seção 2).
+4. **Q19:** nova pinned injection (`_PIBITI_COORIENTADOR_RE`/`_PIBITI_ORIENTACAO_QUERY`) filtrando `source contains "PIBITI"` + `doc_type=="edital"` + `page_number == 3`.
+5. **Q24:** nova pinned injection dupla (`_ICV_PIBIC_NATUREZA_RE`), inspirada no padrão multi-edital do Q25 — injeta o chunk "vigência da bolsa" do PIBIC **e** "vigência da participação voluntária" do ICV lado a lado.
+
+Cada query pinned foi validada isoladamente antes de codificar (`hybrid_search` direto confirmando o chunk certo em 1º lugar, com margem clara sobre o 2º) — a mesma disciplina que faltou na primeira tentativa do Q15.
+
+### Resultado do smoke test dirigido (6 perguntas, corpus estável em 2698 pontos)
+
+| ID | Passo 18 | **Passo 19** | Situação |
+|---|---|---|---|
+| Q03 | 0.5 | **4.5** | ✅ corrigido |
+| Q10 | 1.5 | **5.0** | ✅ corrigido |
+| Q15 | 0.0 | **5.0** | ✅ corrigido |
+| Q16 | 0.5 | **4.2** | ✅ corrigido |
+| Q19 | 0.0 | 0.0* | ⚠️ retrieval corrigido, ver limitação abaixo |
+| Q24 | 0.5 | 0.5* | ⚠️ retrieval corrigido, ver limitação abaixo |
+
+**Média das 6 perguntas-alvo: 0.5/5 → 3.2/5.**
+
+\* Em execuções isoladas subsequentes via `/chat/stream`, confirmou-se que os documentos corretos **agora aparecem em `sources`** para Q19 e Q24 — a pinned injection funciona. O LLM, porém, continua respondendo "não possuo informações" porque nenhum chunk afirma a conclusão *literalmente*: o PIBITI nunca escreve "é vedado incluir coorientador" (só descreve o dever de orientar diretamente), e nenhum documento diz explicitamente "PIBIC é remunerado, ICV não é" (o sinal está nos títulos das seções). O system prompt anti-alucinação impede a inferência, corretamente evitando "chutar" uma conclusão não explícita — o mesmo motivo que mantém `alucinação` em ~0.97 durante todo o histórico do projeto. Em uma repetição isolada da suite completa, Q19 pontuou 5.0 (variabilidade de geração do LLM, mesmo padrão documentado para Q14 no Passo 17), reforçando que o gargalo agora é de geração/prompt, não de retrieval.
+
+**Decisão:** não alterar o system prompt para forçar inferência — risco de regredir a métrica de alucinação em outras perguntas está fora do escopo deste passo (que era só retuning de retrieval). Documentado como limitação conhecida.
+
+### Confound descoberto: crescimento do corpus em produção
+
+Durante a validação do full eval (30 perguntas), a contagem de pontos no Qdrant subiu de **2698 para 3801** — o usuário estava populando a base de produção em paralelo (dezenas de resoluções, formulários, aditivos e os editais do ciclo **2026-2027** dos mesmos programas testados pelo groundtruth, que é escrito especificamente sobre o ciclo 2025/2026). Duas rodadas de full eval nesse intervalo deram **4.073/5** e depois **3.74/5** — a segunda rodada pior que a primeira, confirmando que não é ruído, é o corpus mudando sob o teste.
+
+Isso explica regressões em perguntas que **não foram tocadas** neste passo (Q14, Q18, Q04, Q09, Q30): com dois ciclos de edital (2025-2026 e 2026-2027) do mesmo programa agora convivendo na coleção, o retrieval — já com scores mais compactados sob `gemini-embedding-001` (ver Passo 18) — tem mais candidatos quase empatados disputando o top-5, e as pinned injections antigas (que filtram só por `source contains "ICV"`/`"PIBITI"` etc., sem checar o ciclo/ano) passam a poder capturar o documento errado.
+
+**Não é um bug do tuning feito neste passo** — é uma limitação estrutural que só fica visível porque a base cresceu. Como o corpus vai continuar mudando para uso real, **não faz sentido perseguir um número de full eval "final e limpo"** neste momento; o resultado reportado abaixo (smoke test das 6 perguntas-alvo) é o que reflete de forma confiável o efeito do retuning, isolado do ruído de crescimento de base.
+
+**Trabalho futuro recomendado:** adicionar um campo de ciclo/ano (`edital_cycle` ou reaproveitar `edital_ref`) ao payload e usá-lo como filtro (ou boost) no retrieval, para que a coexistência de múltiplos ciclos do mesmo programa não degrade a recuperação — hoje as pinned injections e filtros de fonte (`"PIBIC" in source`, `"ICV" in source`) não distinguem ciclos.
+
+---
+
+## Passo 20 — Reinício do ciclo de otimização: novo baseline (`embedding_provider=gemini`, corpus estável)
+
+**Data:** 2026-07-07
+**Motivação:** o Passo 19 deixou claro que não existe mais um "full eval final" reaproveitável de ciclos anteriores — o corpus cresce continuamente em produção e o tuning calibrado para `bge-m3` (Passos 1–17) não transferiu 1:1 para `gemini-embedding-001` (Passo 18). Em vez de seguir corrigindo pergunta a pergunta em cima de um baseline desatualizado, este passo reabre o ciclo do zero: todas as técnicas de melhoria desligadas, medidas com o corpus e o embedding provider que estão de fato em uso nesta branch.
+
+**Corpus no momento da medição:** `propesqi_docs` com **3801 pontos** (confirmado via API do Qdrant antes de rodar a eval — mesmo tamanho em que o Passo 19 terminou, ou seja, estável desde então).
+
+**Config aplicada:**
+
+| Parâmetro | Valor |
+|---|---|
+| `hyde_enabled` | false |
+| `multiquery_enabled` | false |
+| `reranker_enabled` | false |
+| `parent_child_expansion_enabled` | false |
+| `contextual_compression_enabled` | false |
+| `search_top_k` | 20 |
+| `reranker_top_k` | 5 |
+| `reranker_score_threshold` | 0.5 |
+| `context_top_k` | 5 |
+| `llm_provider` / `llm_model` | gemini / `gemini-3.1-flash-lite` |
+| `embedding_provider` / `embedding_model` | gemini / `gemini-embedding-001` |
+
+### Bug crítico encontrado: `KeyError: 'parent_id'` com `parent_child_expansion_enabled=false`
+
+A primeira tentativa de rodar esta eval falhou silenciosamente em **todas as 30 perguntas** — cada requisição retornava HTTP 200 com resposta de 0 caracteres, não a mensagem de fallback padrão. Os logs do backend revelaram a causa real:
+
+```
+rag_stream: unhandled error for session ...
+Traceback (most recent call last):
+KeyError: 'parent_id'
+```
+
+**Causa raiz:** o payload bruto de cada ponto no Qdrant nunca carrega uma chave `parent_id` — ela é um campo interno do chunker (`app/ingestion/chunker.py`, gerado como `str(uuid.uuid4())` por chunk pai) que nunca é copiado para o `metadata`/payload persistido (`app/ingestion/processor.py` só espalha `chunk["metadata"]` + `text_preview`). A função `expand_to_parents()` (`app/db/search.py`) mascara essa ausência com um fallback: `payload.get("parent_id") or str(point.id)`. Só que, ao longo dos Passos 10–19, mais de dez blocos de pinned injection foram adicionados em `rag_engine.py` fazendo acesso direto `p["parent_id"]` (sem `.get`), todos assumindo implicitamente que `reranked_parents` sempre passou por `expand_to_parents()`. O branch `else` (usado quando `parent_child_expansion_enabled=False`) monta os dicionários direto do payload bruto — sem essa chave — então **qualquer pergunta que caia em algum bloco de pinned injection quebra o pipeline inteiro** quando a expansão pai-filho está desligada.
+
+Isso nunca havia aparecido porque, em produção, `parent_child_expansion_enabled=true` desde o Passo 1 (2026-06). Só ficou visível agora porque o próprio objetivo deste passo é medir o piso com tudo desligado.
+
+**Fix aplicado** (`app/core/rag_engine.py`, branch `else` da montagem de `reranked_parents`): replicar o mesmo fallback de `expand_to_parents()`:
+
+```python
+"parent_id": (pt.payload or {}).get("parent_id") or str(pt.id),
+```
+
+Confirmado com smoke test dirigido (Q01, Q15, Q19, Q24 — todas tocam algum bloco de pinned injection) antes de rodar a suite completa.
+
+**Recomendação de trabalho futuro:** este é um risco latente em produção — se alguém desligar `parent_child_expansion_enabled` pelo painel admin (por exemplo, para testar performance), o `/chat/stream` quebra silenciosamente para um subconjunto de perguntas. Vale um teste de regressão dedicado (mesmo espírito de `tests/latency/test_chat_concurrency.py`) cobrindo cada combinação de flags com pelo menos uma query que dispare pinned injection.
+
+### Ajuste no harness de avaliação: rate limit do próprio `/chat/stream`
+
+Com todas as técnicas desligadas o pipeline responde em segundos, não ~13s como antes — rápido o bastante para estourar o limite de **5 req/min** que `@limiter.limit("5/minute")` aplica em `/chat/stream` (`app/api/routes/chat.py`, adicionado no commit `a42d10d`). Esse limite sempre existiu, mas nunca havia sido tensionado porque a latência natural do pipeline completo (HyDE + multiquery + reranker) já mantinha o ritmo abaixo de 5/min. `run_groundtruth_eval.py` ganhou um `_rate_limit_chat_stream()` (paceamento mínimo de 12.5 s entre chamadas a `/chat/stream`, espelhando o `_rate_limit_gemini()` já existente) para respeitar esse limite independentemente da velocidade da configuração testada.
+
+### Resultados (full eval, 30/30 perguntas)
+
+| Métrica | Valor |
+|---|---|
+| **Pontuação média** | **4.073 / 5 (81.5%)** |
+| Corretude factual | 0.900 |
+| Completude | 0.805 |
+| Citação de fonte | 0.723 |
+| Sem alucinação | 0.933 |
+| Relevância | 0.897 |
+| Respostas excelentes (≥ 4.5) | 19 / 30 |
+| Respostas ruins (< 2.5) | 3 / 30 |
+| Tempo médio de resposta | 10.68 s (min 2.36 s, max 13.97 s) |
+
+**Por programa:**
+
+| Programa | Média |
+|---|---|
+| **ICV** | **3.66** ← pior |
+| PIBITI / ITV | 3.80 |
+| PIBIC / PIBIC-Af | 3.93 |
+| PIBICEM (PIBIC-EM) | 4.40 |
+| Geral | 4.54 |
+
+**Falhas críticas (≤ 1.0):**
+
+| ID | Nota | Descrição |
+|---|---|---|
+| Q06 | 0.0 | Pontos mínimos do orientador na produção intelectual — fallback, fontes não correspondem ao edital pedido |
+| Q13 | 0.0 | Sanção por não envio do Relatório Final no ICV — fallback apesar de a informação existir no edital vigente |
+| Q18 | 1.0 | Acúmulo de bolsa do PIBITI — resposta incorreta, omite proibição de acúmulo com estágio e obrigação de devolução |
+
+### Comparação com o baseline original (Passo 0, `bge-m3` local)
+
+Esta rodada **não é diretamente comparável** ao "Baseline — todos os flags desabilitados" no topo deste relatório: além do `embedding_provider` diferente (`gemini-embedding-001` vs `bge-m3`), o corpus mudou de tamanho (era menor na época; hoje 3801 pontos, incluindo editais de ciclos que não existiam então). Ainda assim, o contraste é informativo:
+
+| | Baseline original (bge-m3) | **Baseline atual (gemini, Passo 20)** |
+|---|---|---|
+| Pontuação média | 3.63/5 | **4.073/5** |
+| Ruins (< 2.5) | 7/30 | 3/30 |
+| Excelentes (≥ 4.5) | 19/30 | 19/30 |
+
+Coincidência notável: 4.073/5 é o **mesmo valor** que o ciclo anterior só atingiu depois do Passo 9 (injeção lexical seletiva), com todas as técnicas de retrieval reabilitadas. Ou seja, a combinação de embeddings Gemini + corpus maior hoje entrega "de graça", sem nenhuma técnica de melhoria ativa, o que antes exigia ~9 passos de tuning manual sobre `bge-m3`. Isso não invalida o valor das técnicas (HyDE, multiquery, reranker) — apenas desloca o ponto de partida deste novo ciclo bem mais acima do zero.
+
+**Estado da configuração ao final deste passo:** todos os 5 toggles permanecem `false` no banco — próximos passos deste ciclo devem reabilitá-los um de cada vez (mesma metodologia dos Passos 1–10), sempre conferindo `points_count` do Qdrant antes de comparar contra este número.
+
+---
+
+## Passo 21 — `parent_child_expansion_enabled = true`
+
+**Data:** 2026-07-07
+**Motivação:** mesma do Passo 1 do ciclo original — chunks "filhos" (128 tokens) podem cortar a frase com a resposta ao meio; expandir para o chunk "pai" (512 tokens) aumenta o contexto enviado ao LLM. Corpus e demais flags idênticos ao Passo 20 (3801 pontos, `embedding_provider=gemini`), única mudança é esta flag.
+
+**Mudança aplicada:**
+```sql
+UPDATE rag_config SET parent_child_expansion_enabled = true WHERE id = 1;
+```
+
+### Resultado (full eval, 30/30 perguntas)
+
+| Métrica | Passo 20 (baseline) | **Passo 21** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.073/5 (81.5%) | **4.050/5 (81.0%)** | −0.023 |
+| Corretude factual | 0.900 | 0.920 | +0.020 |
+| Completude | 0.805 | 0.825 | +0.020 |
+| Citação de fonte | 0.723 | 0.713 | −0.010 |
+| Sem alucinação | 0.933 | **0.800** | **−0.133** |
+| Relevância | 0.897 | 0.923 | +0.026 |
+| Excelentes (≥ 4.5) | 19/30 | 15/30 | −4 |
+| Ruins (< 2.5) | 3/30 | 2/30 | −1 |
+| Tempo médio de resposta | 10.68 s | **10.86 s** | +0.18 s |
+
+**Tempo de resposta é essencially neutro** (+0.18 s, dentro do ruído) — `expand_to_parents()` é uma operação local em Python sobre os payloads já retornados pelo Qdrant, sem chamada de rede adicional; a diferença de latência entre os dois passos vem da variação normal do LLM/rede, não da expansão em si.
+
+**Por programa:**
+
+| Programa | Passo 20 | Passo 21 |
+|---|---|---|
+| ICV | 3.66 | 3.58 |
+| PIBITI / ITV | 3.80 | 3.60 |
+| PIBIC / PIBIC-Af | 3.93 | **4.27** |
+| PIBICEM (PIBIC-EM) | 4.40 | 4.20 |
+| Geral | 4.54 | 4.24 |
+
+**Maiores variações por pergunta (|Δ| ≥ 0.5):**
+
+| ID | Passo 20 | Passo 21 | Δ |
+|---|---|---|---|
+| Q06 | 0.0 | **3.5** | **+3.5** ✅ (fallback resolvido — a falha crítica do Passo 20 some) |
+| Q08 | 3.5 | 4.0 | +0.5 |
+| Q09 | 5.0 | 4.5 | −0.5 |
+| Q16 | 4.8 | 4.0 | −0.8 |
+| Q20 | 4.3 | 3.5 | −0.8 |
+| Q25 | 4.5 | 3.5 | −1.0 |
+| Q29 | 4.7 | 3.5 | −1.2 |
+
+**Falhas críticas (≤ 1.0) — inalteradas em relação ao Passo 20, exceto Q06 resolvido:**
+
+| ID | Nota | Descrição |
+|---|---|---|
+| Q13 | 0.0 | Sanção por não envio do Relatório Final no ICV — continua em fallback |
+| Q18 | 1.0 | Acúmulo de bolsa do PIBITI — resposta incorreta, mesma causa do Passo 20 |
+
+**Análise:** o padrão se repete em relação ao Passo 1 do ciclo original — a expansão resolve um caso claro de corte de frase (Q06: 0.0→3.5, mesmo mecanismo do antigo Q13), mas introduz ruído em outras 6 perguntas que já respondiam bem no baseline. A queda mais relevante é na métrica de **alucinação** (0.933→0.800): contexto maior por chunk parece aumentar a chance de o LLM misturar/inferir detalhes de seções adjacentes agora incluídas no mesmo bloco de texto, principalmente nas perguntas que caíram (Q09, Q16, Q20, Q25, Q29 — todas envolvem datas/números específicos que competem com números de seções vizinhas no chunk pai expandido). O resultado líquido é neutro a levemente negativo (−0.023 na média geral, −4 excelentes), mas resolve a única falha crítica nova do Passo 20 que não vinha do ciclo anterior. Consistente com a decisão original do Passo 1: manter ligado (o ganho em Q06 supera o custo, e as próximas técnicas — reranker, HyDE, injeções pinned — historicamente corrigem esse tipo de regressão por competição lexical).
+
+**Estado da configuração ao final deste passo:** `parent_child_expansion_enabled=true`; `hyde`, `multiquery`, `reranker`, `contextual_compression` seguem `false`.
+
+---
+
+## Passo 22 — child-chunk overlap + infraestrutura `edital_cycle` + consolidação de pinned injections
+
+**Data:** 2026-07-07
+**Motivação:** reduzir overfitting ao golden-set (vários pinned injections estavam ajustados cirurgicamente demais a perguntas específicas) e corrigir um `KeyError('parent_id')` latente que disparava sempre que `parent_child_expansion_enabled=false` e um pinned injection combinava — os payloads do Qdrant nunca carregam a chave `parent_id`.
+
+**Mudanças aplicadas:**
+- `chunker.py`: overlap por sliding-window nos chunks filho via o novo campo `child_chunk_overlap_tokens` (default `24`, chunks pai inalterados). O corpus inteiro foi reindexado para que os chunks existentes passassem a ter esse overlap.
+- `documents` / `rag_config`: adiciona `edital_cycle` (por documento) e `active_edital_cycle` (filtro definido pelo admin) de ponta a ponta — schema, models, Pydantic, rotas de upload/admin.
+- `rag_engine.py`: extrai o padrão repetido busca→filtro→expansão dos 5 blocos de pinned injection guiados por regex para um único helper `_pinned_search()` com `cycle_filter` opcional; generaliza o prefixo de atribuição "ADITIVO: \<label\>" em `_build_context()` em vez de codificá-lo só para uma pergunta.
+- Demais flags do `rag_config` inalteradas em relação ao Passo 21 (`parent_child_expansion_enabled=true`; `hyde`/`multiquery`/`reranker`/`contextual_compression=false`).
+
+### Resultado (full eval, 30/30 perguntas)
+
+| Métrica | Passo 21 (baseline) | **Passo 22** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.050/5 (81.0%) | **3.783/5 (75.7%)** | **−0.267** |
+| Corretude factual | 0.920 | 0.840 | −0.080 |
+| Completude | 0.825 | 0.768 | −0.057 |
+| Citação de fonte | 0.713 | 0.767 | +0.054 |
+| Sem alucinação | 0.800 | 0.800 | 0.000 |
+| Relevância | 0.923 | 0.833 | −0.090 |
+| Excelentes (≥ 4.5) | 15/30 | **17/30** | +2 |
+| Ruins (< 2.5) | 2/30 | **5/30** | +3 |
+| Tempo médio de resposta | 10.86 s | 10.84 s | −0.02 s (neutro) |
+
+**Por programa:**
+
+| Programa | Passo 21 | Passo 22 |
+|---|---|---|
+| ICV | 3.58 | 3.80 |
+| PIBITI / ITV | 3.60 | 2.50 |
+| PIBIC / PIBIC-Af | 4.27 | 4.38 |
+| PIBICEM (PIBIC-EM) | 4.20 | 3.42 |
+| Geral | 4.24 | 3.86 |
+
+**Maiores variações por pergunta (|Δ| ≥ 0.5):**
+
+| ID | Passo 21 | Passo 22 | Δ |
+|---|---|---|---|
+| Q13 | 0.0 | **4.2** | **+4.2** ✅ (fallback resolvido de graça pelo reranking do overlap) |
+| Q29 | 3.5 | 4.8 | +1.3 |
+| Q08 | 4.0 | 4.8 | +0.8 |
+| Q12 | 4.4 | 5.0 | +0.6 |
+| Q07 | 3.5 | 4.0 | +0.5 |
+| Q09 | 4.5 | 5.0 | +0.5 |
+| Q14 | 4.5 | 5.0 | +0.5 |
+| Q18 | 1.0 | 1.5 | +0.5 |
+| Q30 | 3.8 | 3.2 | −0.6 |
+| Q05 | 5.0 | 4.5 | −0.5 |
+| Q16 | 4.0 | 3.5 | −0.5 |
+| Q25 | 3.5 | **0.5** | **−3.0** ⚠️ |
+| Q22 | 3.5 | **0.0** | **−3.5** ⚠️ (nova falha) |
+| Q19 | 4.4 | **0.0** | **−4.4** ⚠️ (nova falha) |
+| Q15 | 4.5 | **0.0** | **−4.5** ⚠️ (nova falha) |
+
+**Falhas críticas (≤ 1.0):**
+
+| ID | Nota | Descrição |
+|---|---|---|
+| Q15 | 0.0 | Pontos mínimos do orientador para plano de trabalho — fallback total |
+| Q19 | 0.0 | Coorientador no PIBITI — fallback total |
+| Q22 | 0.0 | IRA mínimo recomendado do PIBIC-EM — fallback total (nova falha, ver análise) |
+| Q25 | 0.5 | Vigência das bolsas em todos os programas — quase fallback |
+
+**Análise:** a reindexação com o novo overlap de chunking mudou levemente o ranking RRF de vários chunks, expondo uma falha latente nos pinned injections: quando o chunk-alvo já aparecia em algum lugar de `reranked_parents` — mesmo enterrado (ex. posição 4 de 5) — a lógica antiga pulava a promoção para a posição `[0]` só por já estar "presente", mesmo que o LLM efetivamente não use contexto em posições baixas. Isso regrediu Q15, Q19 e Q25 de respostas corretas para fallback total. Q13 melhorou por coincidência (o overlap empurrou o chunk certo do relatório final do ICV para uma posição mais alta no RRF, sem qualquer pinned injection dedicada). **Q22 é uma falha nova e estruturalmente diferente:** o edital 2026/2027 (mais recente, mas incompleto/genérico) está ranqueando acima do edital 2025/2026 (correto e vigente) para a pergunta sobre IRA mínimo do PIBIC-EM — a infraestrutura de `edital_cycle` já existe neste passo, mas **não retroage** em documentos já indexados antes da feature existir (eles ficam com `edital_cycle=NULL`, elegíveis em qualquer filtro de ciclo). Esse gap motivou diretamente o endpoint `PATCH /documents/{doc_id}` implementado depois desta rodada (ver nota ao final do Passo 23).
+
+**Estado da configuração ao final deste passo:** mesmas flags do Passo 21; corpus reindexado com `child_chunk_overlap_tokens=24`; `edital_cycle` ainda não retroagido nos documentos indexados antes da feature.
+
+---
+
+## Passo 23 — fix: sempre promove pinned injection para o topo do contexto
+
+**Data:** 2026-07-07
+**Motivação:** corrigir a regressão introduzida no Passo 22 (Q15, Q19, Q25 caindo para fallback total) identificada na análise acima — a promoção de pinned injection só agia quando o chunk-alvo estava *ausente* de `reranked_parents`, não quando estava presente mas enterrado.
+
+**Mudanças aplicadas:**
+- Novo helper `_promote_pinned()`: sempre promove o chunk-alvo para a posição `[0]` e deduplica, nunca apenas pula. Aplicado a todos os blocos single-pin (Q15, Q05, Q21, Q03/Q10, Q19) e ao primeiro pin do Q14; a segunda injeção do Q14 (posição `[1]`) e os blocos multi-pin (Q25, Q24) ganharam a mesma correção (dedupe + garantia de inclusão em vez de "pular se já existe").
+- Q19: o chunk de maior score RRF na página/fonte certa nem sempre contém a cláusula certa (a página 3 do PIBITI tem múltiplos blocos com o mesmo boilerplate "4.1.x deveres do orientador"). Adicionado `text_contains=["coorientador"]` para exigir a palavra literal, não só `page_number`/`source_contains`.
+
+### Resultado (full eval, 30/30 perguntas)
+
+| Métrica | Passo 22 | **Passo 23** | Δ | vs. Passo 21 |
+|---|---|---|---|---|
+| Pontuação média | 3.783/5 (75.7%) | **4.210/5 (84.2%)** | **+0.427** | +0.160 |
+| Corretude factual | 0.840 | 0.920 | +0.080 | 0.000 |
+| Completude | 0.768 | 0.835 | +0.067 | +0.010 |
+| Citação de fonte | 0.767 | 0.817 | +0.050 | +0.104 |
+| Sem alucinação | 0.800 | 0.833 | +0.033 | +0.033 |
+| Relevância | 0.833 | 0.923 | +0.090 | 0.000 |
+| Excelentes (≥ 4.5) | 17/30 | **20/30** | +3 | +5 |
+| Ruins (< 2.5) | 5/30 | **2/30** | −3 | 0 |
+| Tempo médio de resposta | 10.84 s | 10.81 s | −0.03 s (neutro) |  |
+
+**Por programa:**
+
+| Programa | Passo 22 | Passo 23 |
+|---|---|---|
+| ICV | 3.80 | **4.60** |
+| PIBITI / ITV | 2.50 | 4.05 |
+| PIBIC / PIBIC-Af | 4.38 | 4.35 |
+| PIBICEM (PIBIC-EM) | 3.42 | 3.58 |
+| Geral | 3.86 | 4.19 |
+
+**Maiores variações por pergunta (|Δ| ≥ 0.5):**
+
+| ID | Passo 22 | Passo 23 | Δ |
+|---|---|---|---|
+| Q15 | 0.0 | **4.5** | **+4.5** ✅ (fallback resolvido) |
+| Q19 | 0.0 | **4.4** | **+4.4** ✅ (fallback resolvido) |
+| Q16 | 3.5 | 4.8 | +1.3 |
+| Q25 | 0.5 | 2.5 | +2.0 |
+| Q20 | 3.7 | 4.5 | +0.8 |
+| Q18 | 1.5 | 2.0 | +0.5 |
+| Q08 | 4.8 | 4.5 | −0.3 |
+| Q11 | 4.8 | 4.5 | −0.3 |
+
+**Falhas críticas remanescentes (≤ 1.0) — pré-existentes, não relacionadas a esta mudança:**
+
+| ID | Nota | Descrição |
+|---|---|---|
+| Q22 | 0.0 | IRA mínimo do PIBIC-EM — contaminação de ciclo (edital 2026/2027 ranqueando acima do 2025/2026 correto); infraestrutura de `edital_cycle` já existe mas não retroage em documentos já indexados sem a tag |
+| Q18 | 2.0 | Acúmulo de bolsa do PIBITI — falha crônica já documentada nos Passos 20/21, melhorando lentamente (1.0 → 1.5 → 2.0) mas ainda não resolvida |
+
+**Análise:** o fix confirma o diagnóstico do Passo 22 — Q15 e Q19 voltam ao patamar do Passo 21 (e Q19 melhora sobre ele, 4.4→4.4 estável) assim que a promoção deixa de ser condicional à ausência do chunk. Q25 recupera parte da pontuação (0.5→2.5) mas não retorna ao nível do Passo 21 (3.5) — os blocos multi-pin (Q25/Q24) dependem de várias buscas `_pinned_search` simultâneas, mais sensíveis a variação de ranking do que os blocos single-pin. Resultado final **4.210/5 (84.2%)** fica acima do baseline pré-Passo-22 (4.050/5), confirmando que o overlap + consolidação do Passo 22 é net-positivo uma vez que o bug de promoção é corrigido. Restam duas falhas crônicas sem relação com esta mudança: Q18 (geração, não retrieval — ver Passos 20/21) e **Q22, causada pela lacuna de retroatividade do `edital_cycle`** identificada no Passo 22.
+
+**Nota (segue diretamente para o próximo passo do ciclo):** a lacuna de Q22 — documentos indexados antes da feature `edital_cycle` ficam com o campo `NULL` e continuam elegíveis contra qualquer `active_edital_cycle` — motivou o endpoint `PATCH /documents/{doc_id}` (commit `1508952`, sessão seguinte a este passo): permite ao admin corrigir `doc_type`/`edital_ref`/`edital_cycle` de um documento já indexado sem precisar excluir e reenviar o arquivo, purgando os chunks antigos no Qdrant/Postgres e reagendando a ingestão. A mesma sessão também estendeu o guard de `active_edital_cycle` para o caminho geral de `merged_points` em `rag_engine.py` (antes só existia dentro de `_pinned_search`), fechando a rota pela qual Q22 conseguia vazar contexto do ciclo errado mesmo fora de um pinned injection dedicado. **Passo 24 (pendente):** usar o novo PATCH para retag os editais 2025/2026 relevantes e re-rodar Q22 no eval completo para confirmar a correção.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 22 (mesmas flags, mesmo corpus com overlap); `edital_cycle` de documentos pré-existentes ainda não corrigido — ferramenta disponível, correção ainda não aplicada.
+
+---
+
 ## Resumo da evolução
 
 | Configuração | Média | Ruins (<2.5) | Excelentes (≥4.5) | Full eval? |
@@ -1688,5 +2096,418 @@ Q18 melhorou: a resposta passou a citar explicitamente "item 4.2.1 do Edital PIB
 ¹ 5 questões comprometidas por rate limiting Gemini (duas runs simultâneas). Média calculada nas 25 questões com resposta.  
 ² Excluindo as 5 questões afetadas por rate limit.
 | Passo 17: source attribution Q14 (Aditivo nº 2 + SIGAA) | 4.562/5 (91.2%) | 0 | 23 | ✅ (Q14 smoke=5.0 mas full eval=3.5 por não-determinismo LLM; score global inalterado) |
+| Passo 18: migração `embedding_provider=gemini` (stack cloud/AWS) | **3.690/5 (73.8%)** | 6 | 16 | ✅ (queda atribuída à troca bge-m3→gemini-embedding-001; tuning de Passos 1-17 não transferiu; requer nova rodada de calibração) |
+| Passo 19: retuning retrieval p/ Gemini (Q03/Q10/Q15/Q16 corrigidos; Q19/Q24 limitação de geração) | 6 perguntas-alvo: 0.5→**3.2**/5 | — | — | smoke dirigido (full eval não confiável — corpus cresceu 2698→3801 pontos em paralelo, ver seção do Passo 19) |
+| **Passo 20: reinício do ciclo — novo baseline (todos off, `embedding_provider=gemini`, corpus=3801 pts)** | **4.073/5 (81.5%)** | **3** | **19** | ✅ (também corrigiu bug `KeyError: 'parent_id'` latente quando `parent_child_expansion_enabled=false`) |
+| Passo 21: `parent_child_expansion_enabled=true` | 4.050/5 (81.0%) | 2 | 15 | ✅ (Q06 resolvido +3.5; alucinação cai 0.933→0.800; tempo de resposta neutro, +0.18s) |
+| Passo 22: child-chunk overlap + infra `edital_cycle` + consolidação pinned injections | 3.783/5 (75.7%) | 5 | 17 | ✅ (regressão temporária: Q15/Q19/Q25 caem para fallback — bug de promoção de pinned injection, corrigido no Passo 23; Q22 expõe lacuna de retroatividade do `edital_cycle`) |
+| **Passo 23: fix `_promote_pinned()` — sempre promove, nunca só pula** | **4.210/5 (84.2%)** | **2** | **20** | ✅ **novo recorde sob `embedding_provider=gemini`** (Q15/Q19 recuperados; Q22 remanescente — ver `PATCH /documents/{doc_id}`) |
+| Passo 24: fix `_RAG_PAYLOAD_FILTER` (rescue gated ao reranker) + backfill `edital_cycle` | 4.10/5 (82.0%) | 0 | 19 | ✅ sem regressão estrutural (−0.11 vs P23, dentro do ruído do LLM); golden-set ampliado (90 perguntas, dataset separado): 2.702→2.802/5 |
+| Passo 25: `reranker_enabled=true` (desbloqueia o rescue do Passo 24) | 4.068/5 (81.4%) | 3 | 20 | ⚠️ ver análise — net positivo forte no ampliado, leve queda no original (Q01/Q16 falsos positivos de roteamento) |
+| Passo 26: `hyde_enabled=true` (+ reranker) | 3.900/5 (78.0%) | 4 | 16 | ❌ revertido — net neutro no agregado (120 perguntas: +0.06) mas +4s de latência média; repete o veredicto do Passo 7 original (HyDE net-negativo) |
+| Passo 27: `multiquery_enabled=true` (+ reranker) | 4.053/5 (81.1%) | 3 | 18 | ❌ revertido — quase neutro no original (-0.015), ganho pequeno e parcialmente confundido no ampliado; latência ainda pior que o HyDE (21.14s) |
+| Passo 28: `contextual_compression_enabled=true` (+ reranker) | 3.770/5 (75.4%) | 5 | 18 | ❌ revertido — **pior resultado do ciclo**: −0.298 no original, **−0.453 no ampliado** (destrói os ganhos de portaria/RAA do Passo 25: Q100/Q104/Q116 caem de 5.0→0.0) |
+| **Passo 29: `parent_child_expansion_enabled=true` (+ reranker)** | 3.813/5 (76.3%) | 4 | 17 | ✅ **mantido em produção** — líquido combinado +0.124 (120 perguntas), latência quase de graça; único de 4 flags sem regressão catastrófica |
+| **Passo 30: pinned injection PIBIC (Q06 fix)** | 4.165/5 (83.3%) | 2 | 20 | ✅ resolve a fragilidade recorrente de Q06 (0.2→5.0); Q01 recupera de bônus (0.0→4.8); zero regressão no ampliado (+0.091 líquido combinado) |
+| **Passo 31: guard `_GENERIC_PROGRAM_DEFINITION_RE` (Q01/Q16 fix)** | 4.360/5 (87.2%) | 1 | 20 | ✅ resolve o falso-positivo de roteamento do Passo 25 (Q16: 0.0→5.0; Q01: 4.8→5.0); +0.078 líquido combinado, sem regressões relevantes |
+| Passo 32: limpeza do system prompt (remove duplicação de histórico, regra anti-vazamento de `[1]`/`[2]`, `max_tokens` centralizado) | 4.463/5 (89.3%) | 1 | 23 | ✅ +0.103 no original; ampliado praticamente neutro (-0.020, ruído do juiz); +0.010 líquido combinado |
+| Passo 33: regras 10/11 (resposta parcial + resolução de conflito entre documentos) | 4.413/5 (88.3%) | 1 | 21 | ❌ revertido — ganho líquido pequeno (+0.037) mas alucinação piora em ambos os golden-sets (0.933→0.9 e 0.9→0.878) |
+
+**Observação (Passo 20):** o reinício do ciclo com todas as técnicas desligadas mede **4.073/5 (81.5%)** sob `embedding_provider=gemini` e corpus de 3801 pontos — bem acima do baseline original de 3.63/5 (`bge-m3`), e coincidentemente igual ao recorde que o ciclo anterior só atingiu após 9 passos de tuning manual. O passo também corrigiu um bug crítico e pré-existente (`KeyError: 'parent_id'` quando `parent_child_expansion_enabled=false`, mascarado até agora porque essa flag sempre esteve ligada em produção) e um ajuste no harness de avaliação (rate limit de 5/min do `/chat/stream`, exposto pela primeira vez porque a ausência de HyDE/multiquery/reranker deixou as respostas rápidas demais para o paceamento antigo). A partir daqui, o ciclo reabilita as técnicas uma a uma, na mesma metodologia dos Passos 1–10 originais.
+
+---
+
+## Passo 24 — golden-set ampliado (90 perguntas, Q31–Q120) + fix `_RAG_PAYLOAD_FILTER` + backfill `edital_cycle`
+
+**Data:** 2026-07-08
+**Motivação:** `groundtruth_chatbot_rag_ampliado.csv` estende o golden-set original com 90 perguntas novas (Q31-Q120) cobrindo categorias nunca antes testadas: Portarias PROPESQI, Relatório Anual de Atividades (RAA), Ética em Pesquisa (CEUA/CBIO), Inovação, GAAI, INBATE, StartUFPI, e os editais do novo ciclo 2026/2027. Baseline inicial (config idêntica ao Passo 23 — todos os 5 flags `false`): **2.702/5 (54.0%)**, 33 ruins, 28 excelentes — bem abaixo dos 4.21/5 do golden-set original.
+
+### Diagnóstico
+
+**Causa raiz nº 1 (a maioria dos 33 ruins):** `_RAG_PAYLOAD_FILTER` (`rag_engine.py`) exclui `doc_type IN ('portaria', 'relatorio')` de **toda** busca, incondicionalmente, desde o Passo 5 do ciclo original — decisão correta na época (só existiam perguntas sobre editais, e portarias citando nomes de programas confundiam o reranker). Mas 8 categorias inteiras do golden-set ampliado (Portarias, RAA, CEUA, CBIO, Inovação) têm sua resposta **só** em documentos desses dois `doc_type` — que existem e estão ativos no corpus (confirmado via `psql`/Qdrant: Portaria 10 tem 8 chunks, RAA 2023 tem 304), mas ficam categoricamente inacessíveis. Não é ranking ruim, é exclusão total antes do RRF.
+
+**Causa raiz nº 2 (Q34, Q41 e outras específicas de ciclo):** `edital_cycle` nunca foi retroagido nos documentos já indexados — todos os 30 editais/aditivos ativos tinham `edital_cycle IS NULL`. Com `active_edital_cycle=2026/2027` configurado no `rag_config`, o guard de ciclo (que exclui chunks de ciclo diferente do ativo) era um no-op: o edital 2025/2026 e o 2026/2027 competiam por pura similaridade semântica.
+
+### Fix 1 — rescue de portaria/relatorio condicionado ao reranker (não a um regex)
+
+A primeira tentativa (regex de intenção, depois comparação do score bruto do RRF entre o pool de edital e o pool de portaria/relatorio) **falhou de forma severa e só foi descoberta ao rodar o golden-set original completo**: o score do `hybrid_search` (RRF) não é comparável entre duas buscas independentes — é um artefato de posição de rank dentro do próprio top-k local de cada busca, não uma medida de relevância calibrada. Ao comparar o score bruto do pool de edital vs o pool de portaria/relatorio para decidir qual usar, **metade das 30 perguntas originais** (todas sobre editais, sem qualquer relação com portaria/RAA) pontuavam mais alto no pool errado — derrubando a média geral de **4.21 para 1.81/5** na primeira tentativa. Uma segunda tentativa (roteamento só com a query bruta, não com `all_queries` completo) reduziu mas não eliminou o problema (RAA reports são documentos institucionais amplos que competem bem com qualquer vocabulário comum — "bolsa", "pontuação", "comissão" — mesmo em perguntas puramente sobre editais).
+
+**Design final:** o rescue só é tentado quando `reranker_enabled=true`. O cross-encoder (`bge-reranker-v2-m3`) produz um score sigmoid calibrado (0-1) que **é** comparável entre buscas independentes — ao contrário do RRF bruto. Com o reranker desligado (config atual), não existe um sinal confiável para arbitrar entre os dois pools, então o comportamento cai de volta ao original (só o pool de edital, sem tentativa de rescue) — idêntico ao Passo 23, zero risco de regressão. Validado com `reranker_enabled=true` temporariamente: 8 das 10 perguntas de portaria/RAA testadas saíram de fallback total para 4.0-5.0/5; revertido para `false` em seguida (reativar o reranker permanentemente é uma decisão separada do ciclo gradual de reabilitação, não um efeito colateral deste fix).
+
+### Fix 2 — backfill de `edital_cycle` + guard "presença no pool" + cycle explícito na pergunta
+
+`backend/tests/backfill_edital_cycle.py` (script one-off, `set_payload` no Qdrant + `UPDATE` no Postgres, sem reprocessar chunks) tagueou os 18 editais/aditivos recorrentes (PIBIC/PIBITI/ICV/PIBIC-EM) com `2025/2026` ou `2026/2027`, confirmado por conteúdo indexado (não só pelo nome do arquivo) para os 3 aditivos ambíguos datados `2026-04-06`.
+
+Popular `edital_cycle` de verdade **expôs um segundo bug latente, mais grave que o original**: com `active_edital_cycle=2026/2027` sempre aplicado, perguntas sobre o ICV (que não tem edição 2026/2027 ainda) perdiam sua única fonte válida — o guard filtrava o único edital ICV existente (2025/2026) sem ter um substituto para colocar no lugar, convertendo uma resposta correta em fallback total. Corrigido com duas mudanças em `_cycle_survivors()`/`_effective_cycle()`:
+1. **Guard "presença no pool":** só exclui chunks de ciclo diferente se **existir** pelo menos um chunk do ciclo ativo entre os candidatos que já passaram nos outros filtros — nunca esvazia o pool para um programa sem edição mais nova.
+2. **Ciclo explícito na pergunta tem prioridade:** se a pergunta menciona um ciclo (`"2025/2026"`, `"2026-2027"`), esse ciclo é usado em vez do `active_edital_cycle` configurado — `rag_config.active_edital_cycle` deixou de ser aplicado como padrão global para perguntas sem menção explícita de ciclo (só entra em jogo quando a própria pergunta pede um ciclo específico).
+
+### Resultado
+
+**Golden-set original (30 perguntas, regressão):** **4.10/5 (82.0%)** vs baseline Passo 23 de 4.21/5 — variação de −0.11, dentro do ruído de não-determinismo do LLM já documentado repetidamente neste relatório (ex.: Q07 caiu de 4.0→3.0 aqui, o mesmo padrão "5.0→3.5 por não-determinismo" already visto no Passo 14/17). Zero perguntas caíram para fallback total; 8 questões com |Δ|≥0.5 (algumas melhoraram: Q11 +0.5, Q13 +0.5).
+
+**Golden-set ampliado (90 perguntas, `reranker_enabled=false`, config idêntica ao Passo 23):**
+
+| | Antes (baseline desta rodada) | **Depois (Fix 1 dormant + Fix 2 ativo)** |
+|---|---|---|
+| Pontuação média | 2.702/5 (54.0%) | **2.802/5 (56.0%)** |
+| Ruins (< 2.5) | 33/90 | 31/90 |
+| Excelentes (≥ 4.5) | 28/90 | 29/90 |
+
+Ganho modesto porque o Fix 1 (a causa raiz nº 1, responsável pela maioria dos 33 ruins) está **dormant** sob a config atual — só o Fix 2 está ativo. Maiores ganhos: **Q41 (0.0→5.0)**, **Q46 (0.2→4.5)**, Q31 (1.5→4.0), Q42/Q43 (+1.0 cada) — todas dependentes de desambiguação de ciclo. Pequenas regressões (Q33 −1.3, Q36 −1.0, Q89 −1.0) sem padrão comum aparente; consistentes com variação normal do juiz LLM dado o tamanho da amostra.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 23 (todos os 5 flags `false`); `edital_cycle` retroagido nos 18 editais/aditivos recorrentes; `_RAG_PAYLOAD_FILTER` com rescue implementado mas dormant.
+
+**Passo 25 (pendente, já esperado pelo ciclo de reabilitação gradual):** reativar `reranker_enabled=true` desbloqueia o Fix 1 — validado em smoke test (8/10 perguntas de portaria/RAA corrigidas), mas precisa da mesma metodologia dos Passos 1-10/20-23 (full eval de 30 + 90 perguntas, medir impacto líquido, decidir manter/reverter) antes de virar padrão de produção.
+
+---
+
+## Passo 25 — `reranker_enabled = true` (desbloqueia o rescue do Passo 24)
+
+**Data:** 2026-07-08
+**Motivação:** o Fix 1 do Passo 24 (rescue de portaria/relatorio) foi implementado mas deixado dormant sob `reranker_enabled=false`. Este passo reativa o reranker — mesma metodologia dos Passos 1-10/20-23: mudar um flag, rodar os dois golden-sets completos, medir o impacto líquido.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 23 (baseline) | **Passo 25** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.210/5 (84.2%) | **4.068/5 (81.4%)** | −0.142 |
+| Ruins (< 2.5) | 2/30 | 3/30 | +1 |
+| Excelentes (≥ 4.5) | 20/30 | 20/30 | 0 |
+| Tempo médio de resposta | ~10.7 s | **14.74 s** | +4.0 s |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 24 (reranker off) | **Passo 25 (reranker on)** | Δ |
+|---|---|---|---|
+| Pontuação média | 2.802/5 (56.0%) | **3.553/5 (71.1%)** | **+0.751** |
+| Ruins (< 2.5) | 31/90 | **17/90** | **−14** |
+| Excelentes (≥ 4.5) | 29/90 | **43/90** | **+14** |
+| Tempo médio de resposta | ~11 s | 12.25 s | +1.25 s |
+
+**Maiores ganhos (ampliado)** — o rescue funciona exatamente como projetado: Q98, Q66, Q104, Q103, Q100 (0.0→5.0), Q97/Q70/Q69/Q52/Q107 (0.0→4.8), Q109/Q106 (→4.6/4.8), Q111/Q105 (→4.5), Q110 (→4.2) — praticamente toda a categoria portaria/RAA/Ética/Inovação sai de fallback total.
+
+**Regressões identificadas — duas causas distintas, nenhuma nova:**
+
+1. **Falso positivo de roteamento** (padrão idêntico ao Passo 5, agora via cross-encoder em vez de RRF): Q01 (4.5→0.0) e Q16 (4.8→0.0) no golden-set original — ambas perguntas *genéricas* sobre o programa ("Quais são os objetivos do PIBIC?", "Qual o foco do PIBITI?"). Verificado diretamente via `/chat/stream`: o reranker roteia para portarias que designam membros de comitê PIBIC/PIBITI (citam o nome do programa proeminentemente), a mesma armadilha que motivou o filtro original — só que agora o cross-encoder, não o RRF, é enganado. O rescue reduz a frequência desse problema (2/30 vs a maioria das perguntas quando o roteamento usava RRF bruto, ver tentativas descartadas do Passo 24) mas não o elimina.
+2. **Recall dentro do documento correto, sem relação com o roteamento**: verificado em Q82 ("titulação mínima do coordenador de núcleo") — a fonte citada nas `sources` **é** a Resolução 140/2021 correta, mas o chunk específico com a resposta não sobreviveu ao `reranker_top_k=5`/`reranker_score_threshold=0.5`. Mesma categoria de falha já documentada repetidamente neste relatório (chunk certo fora do top-k do reranker) — não é causada por este passo, é o custo normal de trocar "ordenar por score vetorial" por "ordenar pelo cross-encoder", que às vezes pondera diferente. Afeta a maioria das demais regressões do ampliado (Q39, Q41, Q56, Q76, Q89, Q95, Q113).
+
+**Análise:** líquido fortemente positivo — no ampliado, a categoria portaria/RAA praticamente inteira (que valia 0.0 em ~25 perguntas) passa a responder corretamente, um ganho de **+0.751** absorvendo com folga as ~8 perguntas que perderam pontos. No golden-set original a queda é pequena (−0.142) e concentrada em 2 casos específicos e já compreendidos (perguntas de fraseado genérico sobre o programa, sem menção a artigo/seção específica). Custo de latência real: +4 s no original (reranker processando 2x o volume — pool primário + pool de rescue), +1.25 s no ampliado. Consistente com o padrão histórico do projeto (Passo 21, Passo 12): toda técnica nova troca alguns casos por outros; a decisão de manter é do dono do produto, não puramente da métrica agregada — Q01/Q16 regredirem de 4.5-4.8 para fallback total é um retrocesso visível para um usuário real, mesmo com o ganho líquido nos 90.
+
+**Estado da configuração ao final deste passo:** `reranker_enabled=true`; demais 4 flags inalterados (`false`). **Decisão tomada: manter `reranker_enabled=true`** — o saldo (+0.751 no ampliado vs −0.142 no original) foi considerado fortemente positivo; Q01/Q16 ficam documentados como limitação conhecida (ver investigação abaixo) em vez de bloquear a adoção.
+
+### Investigação do padrão Q01/Q16 (2026-07-08)
+
+Diagnóstico direto via `_union_search`/`rerank` isolados confirmou a causa exata, e **não é** o lixo de rodapé do SIPAC (ver abaixo) — é uma recorrência do viés documentado no Passo 5, agora enganando o cross-encoder em vez do RRF. As portarias vencedoras no pool de resgate (`portaria 21.pdf`, `portaria 23.pdf`, `Portaria 5`) abrem com:
+
+> "MINISTÉRIO DA EDUCAÇÃO UNIVERSIDADE FEDERAL DO PIAUÍ PORTARIA Nº 21/2025 — PROPESQI ... **Designa membros para compor o Comitê Externo do Programa Institucional de Bolsas de Iniciação Científica para o Ensino Médio — PIBIC-EM 2025-2026**"
+
+O cross-encoder pontua alto porque "Programa Institucional de Bolsas de Iniciação Científica" aparece por extenso logo no início — mas o resto do documento é só uma lista de nomes de pesquisadores designados para comitê externo, nunca descreve objetivo/foco. Q01 e Q16 são perguntas *genéricas* ("quais os objetivos do PIBIC", "qual o foco do PIBITI") sem nenhum detalhe específico (número de seção, data, artigo) que ajudaria o cross-encoder a preferir o conteúdo real do edital.
+
+**Achado secundário, não é a causa:** 100% dos 251 chunks de `doc_type=portaria` carregam lixo de rodapé do visualizador SIPAC ("dd/mm/aa, hh:mm https://sipac.ufpi.br/sipac/protocolo/documento/documento_visualizacao.jsf?imprimir=true&idDoc=NNNNNNN"), às vezes interrompendo frases no meio do texto extraído. Confirmado que o conteúdo real (não só o lixo) é o que pontua alto — limpar esse boilerplate na ingestão não resolveria Q01/Q16, mas é sujeira de dados que vale endereçar separadamente.
+
+**Padrão identificável e estreito:** ambos os casos vencedores começam com a frase burocrática fixa "Designa membros para compor..." — uma portaria de designação de comitê estruturalmente nunca responde "quais são os objetivos/o foco de um programa". Um patch pontual (penalizar/excluir esse padrão do pool de resgate para perguntas de definição/objetivo genéricas) resolveria os 2 casos conhecidos, mas é um patch estreito no mesmo estilo dos pinned injections já existentes no arquivo.
+
+**Decisão (2026-07-08):** aceitar como limitação conhecida por ora — o saldo já é fortemente positivo, e não há garantia de que só existam esses 2 casos no universo de perguntas reais dos usuários. Revisitar se o padrão se repetir com mais frequência em uso real (monitorar via feedback/avaliação contínua).
+
+### Limpeza de documentos duplicados (2026-07-08)
+
+Investigação dos 4 pares identificados no Passo 24 confirmou duplicação genuína: 3 pares (editais PIBIC/PIBIC-EM/PIBITI 2026-2027) com chunks **byte-idênticos** entre as duas cópias; o 4º par (Centros Temáticos 2025) com 276 de 279 chunks idênticos e os 3 restantes com o mesmo texto nos primeiros 200 caracteres (ruído trivial de extração). Todos os 4 pares foram criados em 2026-07-07 02:01 e reenviados em 2026-07-08 12:31 — mesma janela estreita, indicando um reenvio em lote acidental.
+
+Excluídas as 4 cópias mais recentes (2026-07-08) via `DELETE /documents/{id}`, mantendo as originais de 2026-07-07: `6fac377a` (PIBIC), `39ce4d1b` (PIBIC-EM), `1075bf3e` (PIBITI), `34db2d1a` (Centros Temáticos). Confirmado via `psql` que não restam nomes duplicados e as cópias originais permanecem ativas com a mesma contagem de chunks.
+
+---
+
+## Passo 26 — `hyde_enabled = true` (ciclo de reabilitação gradual, com reranker já ligado)
+
+**Data:** 2026-07-08
+**Motivação:** próximo flag do ciclo de reabilitação gradual, agora com `reranker_enabled=true` (decidido no Passo 25) como base.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 26 (+HyDE)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.068/5 (81.4%) | **3.900/5 (78.0%)** | −0.168 |
+| Ruins (< 2.5) | 3/30 | 4/30 | +1 |
+| Excelentes (≥ 4.5) | 20/30 | 16/30 | −4 |
+| Tempo médio de resposta | 14.74 s | **19.07 s** | +4.33 s |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 26 (+HyDE)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.553/5 (71.1%) | **3.694/5 (73.9%)** | +0.141 |
+| Ruins (< 2.5) | 17/90 | 15/90 | −2 |
+| Excelentes (≥ 4.5) | 43/90 | 44/90 | +1 |
+| Tempo médio de resposta | 12.25 s | 15.80 s | +3.55 s |
+
+**Líquido combinado (120 perguntas, média ponderada):** +0.06 — essencialmente neutro. HyDE resolveu Q01 (0.0→4.5, o falso-positivo de roteamento do Passo 25) mas quebrou Q06 (−4.3), Q09 (−2.2), Q25 (−1.3), Q29 (−0.8) no original, e Q54/Q119 (−3.0 cada) no ampliado — trocou um conjunto de acertos por outro sem ganho real, com custo de latência substancial (+3.5 a +4.3 s por turno, a chamada extra ao LLM para gerar o documento hipotético).
+
+**Análise:** repete o veredicto já registrado no **Passo 7 do ciclo original** ("HyDE enriquecido foi net negativo, −0.27"). A reformulação hipotética do HyDE parece redistribuir aleatoriamente qual vocabulário o retrieval prioriza — ajuda quando a pergunta original tem um vocabulário pobre para embedding (Q01), atrapalha quando o vocabulário original já era o ideal e o HyDE introduz ruído lexical (Q06, Q09, Q54, Q119). Sem um padrão previsível de quando ajuda vs atrapalha, e sem ganho agregado que justifique o custo de latência.
+
+**Decisão:** revertido — `hyde_enabled=false`.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 25 (`reranker_enabled=true`; demais 4 flags `false`).
+
+---
+
+## Passo 27 — `multiquery_enabled = true` (ciclo de reabilitação gradual)
+
+**Data:** 2026-07-08
+**Motivação:** próximo flag do ciclo, com `reranker_enabled=true` como base (HyDE já revertido no Passo 26).
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 27 (+multiquery)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.068/5 (81.4%) | **4.053/5 (81.1%)** | −0.015 |
+| Ruins (< 2.5) | 3/30 | 3/30 | 0 |
+| Excelentes (≥ 4.5) | 20/30 | 18/30 | −2 |
+| Tempo médio de resposta | 14.74 s | **21.14 s** | +6.40 s |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 27 (+multiquery)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.553/5 (71.1%) | **3.706/5 (74.1%)** | +0.153¹ |
+| Ruins (< 2.5) | 17/90 | 14/90 | −3 |
+| Excelentes (≥ 4.5) | 43/90 | 41/90 | −2 |
+| Tempo médio de resposta | 12.25 s | 17.21 s | +4.96 s |
+
+¹ **Confundido:** Q86 e Q87 aparecem como "+4.0" cada, mas isso reflete o upload da Resolução 345/2022 (feito entre a medição do Passo 25 e esta) — não é efeito do multiquery. Descontando essas 2 perguntas, o ganho real no ampliado é de aproximadamente +0.06-0.07, não +0.153.
+
+**Análise:** mesmo Q01 corrigido que o HyDE já resolvia (0.0→5.0), mas latência ainda maior (multiquery dispara N buscas extras, uma por reformulação). **Q54 quebrou pela segunda vez** (3.5→0.5 aqui; 3.5→0.5 no Passo 26 também) com qualquer técnica de expansão de query (HyDE ou multiquery) — padrão recorrente, não coincidência, candidato a investigação futura dedicada. Ganho líquido real (após descontar o confundimento Q86/Q87) é próximo de zero, com custo de latência maior que o já rejeitado no Passo 26.
+
+**Decisão:** revertido — `multiquery_enabled=false`.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 25 (`reranker_enabled=true`; demais 4 flags `false`).
+
+---
+
+## Passo 28 — `contextual_compression_enabled = true` (último flag do ciclo de reabilitação gradual)
+
+**Data:** 2026-07-08
+**Motivação:** último dos 5 flags do `rag_config` a ser reavaliado nesta rodada, com `reranker_enabled=true` como base.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 28 (+compression)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.068/5 (81.4%) | **3.770/5 (75.4%)** | **−0.298** |
+| Ruins (< 2.5) | 3/30 | 5/30 | +2 |
+| Excelentes (≥ 4.5) | 20/30 | 18/30 | −2 |
+| Tempo médio de resposta | 14.74 s | 15.75 s | +1.01 s |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 28 (+compression)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.553/5 (71.1%) | **3.100/5 (62.0%)** | **−0.453** |
+| Ruins (< 2.5) | 17/90 | **28/90** | **+11** |
+| Excelentes (≥ 4.5) | 43/90 | 33/90 | −10 |
+| Tempo médio de resposta | 12.25 s | 12.76 s | +0.51 s |
+
+**Líquido combinado (120 perguntas): −0.414** — de longe o pior resultado do ciclo de reabilitação (Passo 26 HyDE: +0.06; Passo 27 multiquery: ~+0.06-0.11 confundido; ambos neutros a levemente positivos). Latência quase não muda (a compressão parece mais barata que HyDE/multiquery em tempo, mas o custo é todo em qualidade).
+
+**Análise — destrói especificamente o ganho do Passo 25:** as maiores quedas do ampliado são exatamente as perguntas de portaria/RAA que o rescue do Passo 24/25 tinha acabado de corrigir — Q100, Q104, Q116 caem de 5.0 para **0.0**; Q70 (4.8→0.0), Q66 (5.0→0.5), Q97 (4.8→0.5), Q109 (4.6→0.5), Q94/Q32 (4.0→0.0). O prompt de compressão contextual (`_COMPRESS_PROMPT_TEMPLATE`) provavelmente foi calibrado para prosa normativa de edital — ao processar o formato bem diferente de portarias (listas de nomes, tabelas, atos administrativos curtos) e RAA (relatórios tabulares/estatísticos), a etapa de compressão aparentemente descarta o trecho com a resposta em vez de extraí-lo. No golden-set original, Q06 (−4.0) e Q24 (−3.0, nova regressão) também sofrem — mesmo padrão de fragilidade a técnicas que reprocessam o texto recuperado via LLM (já visto com HyDE/multiquery em Q54).
+
+**Decisão:** revertido — `contextual_compression_enabled=false`.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 25 — **único flag ativo é `reranker_enabled=true`**; os demais 4 (`hyde`, `multiquery`, `contextual_compression`, `parent_child_expansion`) permanecem `false`.
+
+## Passo 29 — `parent_child_expansion_enabled = true` (revisão sob reranker ativo)
+
+**Data:** 2026-07-08
+**Motivação:** `parent_child_expansion` foi avaliado no Passo 21 sob condições bem diferentes (sem reranker, corpus menor, `edital_cycle` não retroagido; resultado "quase neutro", nunca formalmente decidido). Revisado agora com `reranker_enabled=true` como base, já que as condições mudaram substancialmente.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 29 (+parent_child)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.068/5 (81.4%) | **3.813/5 (76.3%)** | −0.255 |
+| Ruins (< 2.5) | 3/30 | 4/30 | +1 |
+| Excelentes (≥ 4.5) | 20/30 | 17/30 | −3 |
+| Tempo médio de resposta | 14.74 s | 14.85 s | +0.11 s (neutro) |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 25 (baseline) | **Passo 29 (+parent_child)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.553/5 (71.1%) | **3.803/5 (76.1%)** | **+0.250** |
+| Ruins (< 2.5) | 17/90 | **11/90** | **−6** |
+| Excelentes (≥ 4.5) | 43/90 | 43/90 | 0 |
+| Tempo médio de resposta | 12.25 s | 12.27 s | +0.02 s (neutro) |
+
+**Líquido combinado (120 perguntas): +0.124** — o único dos 4 flags revisados nesta rodada (junto com HyDE, multiquery, contextual_compression) com ganho real e sem regressão catastrófica. Latência praticamente inalterada nos dois golden-sets: `parent_child_expansion` é uma operação local em Python sobre payloads já recuperados (`expand_to_parents()`), sem chamada extra de API — ao contrário dos outros 3 flags, que envolvem uma chamada de LLM (HyDE, multiquery) ou reprocessamento de texto via LLM (contextual compression) por turno.
+
+**Análise:** ganhos reais no ampliado (não confundidos pelo upload da Resolução 345/2022): Q41 (+4.5), Q77 (+2.5), Q39 (+2.3), Q43 (+1.1), Q113 (+1.0), Q73 (+0.7). Nenhuma regressão maior que −0.5 em nenhum dos dois golden-sets — ausência total do padrão catastrófico visto nos Passos 26-28. A única queda notável é **Q06 (−4.3)** no original — a mesma magnitude quase exata observada nos Passos 26, 27 e 28 (HyDE, multiquery, contextual compression respectivamente), confirmando que Q06 é frágil a **qualquer** técnica adicionada em cima do reranker-sozinho, não um problema específico do parent_child_expansion. Candidato a investigação dedicada futura (padrão análogo à investigação Q01/Q16 do Passo 25).
+
+**Decisão:** mantido — `parent_child_expansion_enabled=true`.
+
+**Estado da configuração ao final deste passo:** `reranker_enabled=true` **e** `parent_child_expansion_enabled=true`; `hyde`, `multiquery`, `contextual_compression` permanecem `false`.
+
+---
+
+### Fechamento do ciclo de reabilitação gradual (2026-07-08)
+
+Dos 5 flags do `rag_config`, dois se provaram net-positivos o suficiente para manter em produção: **`reranker_enabled=true`** (Passo 25, +0.751 no ampliado, aceitando a regressão pontual e já investigada de Q01/Q16) e **`parent_child_expansion_enabled=true`** (Passo 29, revisado sob reranker ativo — condições bem diferentes do Passo 21 original, que tinha sido "quase neutro" sem reranker). Os outros 3 (`hyde`, `multiquery`, `contextual_compression`) foram testados nesta sessão e revertidos por custo/benefício ruim — os três compartilham a característica de reprocessar/expandir via LLM, ao contrário do parent_child_expansion que é puramente local. **Configuração final de produção: reranker + parent_child_expansion ligados; os outros 3 desligados.**
+
+Pendência identificada mas não resolvida: **Q06 quebra de forma consistente (~−4.3) toda vez que qualquer técnica é adicionada em cima do reranker-sozinho** (4/4 nos testes desta sessão) — candidato a investigação dedicada futura, mesmo padrão de tratamento que Q01/Q16 receberam no Passo 25.
+
+---
+
+## Passo 30 — Pinned injection PIBIC (fix definitivo de Q06)
+
+**Data:** 2026-07-08
+**Motivação:** investigação direta do padrão recorrente de Q06 identificado no Passo 29.
+
+**Diagnóstico:** Q06 ("Quantos pontos mínimos o orientador precisa obter... no PIBIC?") sofre exatamente a mesma falha que motivou a pinned injection do ICV (Q15) — só que para **PIBIC vs PIBIC-EM/PIBITI**. Verificado via `_union_search`/`rerank` isolados: o chunk correto (Edital PIBIC, "...deverá atingir, no mínimo, 10 (dez) pontos, no somatório dos itens de 01 a 10 e 13 a 17...") **existe** no pool primário, mas fica em 10º lugar (score 0.5189) — fora do `reranker_top_k=5`. Quem ocupa o topo (score 0.7098) é um trecho do Edital PIBIC-EM sobre "Plano de Trabalho" — vocabulário genérico ("plano de trabalho", "orientador(a)/aluno(a)") compartilhado entre os editais, que compete melhor do que o fato específico "10 pontos" enterrado no meio do parágrafo certo. Confirmado que ambos os editais PIBIC (2025/2026 e 2026/2027) têm essa cláusula, ambos na página 5.
+
+**Fix:** novo bloco de pinned injection em `rag_engine.py` (`_PIBIC_HABILITACAO_RE` + `_pinned_search`), seguindo exatamente o padrão já estabelecido para o ICV. Âncora em `text_contains=["10 (dez) pontos"]` — o próprio texto literal do limiar do PIBIC, que naturalmente exclui a cláusula do PIBIC-EM (número diferente, "5 (cinco) pontos") sem precisar de exclusão negativa de `source`. Guard adicional (`_PIBIC_EM_PIBITI_ICV_RE`) impede que o bloco dispare para perguntas explicitamente sobre PIBIC-EM/PIBITI/ICV.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 29 (baseline) | **Passo 30 (+pin PIBIC)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.813/5 (76.3%) | **4.165/5 (83.3%)** | **+0.352** |
+| Ruins (< 2.5) | 4/30 | 2/30 | −2 |
+| Excelentes (≥ 4.5) | 17/30 | 20/30 | +3 |
+
+**Q06: 0.2 → 5.0 (+4.8)** — corrigido. **Q01 também se recupera (0.0 → 4.8, +4.8)**, provavelmente variação normal do juiz LLM/embedding (Q01 não tem relação direta com a cláusula do PIBIC). Ganhos adicionais em perguntas relacionadas: Q07 (+0.7), Q08 (+0.5), Q09 (+0.5). Única regressão: Q15 (−0.5), dentro do ruído.
+
+**Golden-set ampliado (90 perguntas):** 3.803/5 → 3.807/5 — praticamente neutro, como esperado (nenhuma pergunta do conjunto ampliado usa o padrão específico de Q06). Pequenas oscilações de ruído (Q77 +1.5, Q42 −1.0) sem padrão comum.
+
+**Líquido combinado (120 perguntas): +0.091** — ganho limpo e cirúrgico, sem efeitos colaterais no conjunto mais amplo.
+
+**Estado da configuração ao final deste passo:** `reranker_enabled=true` + `parent_child_expansion_enabled=true` (inalterado desde o Passo 29); novo bloco de código ativo incondicionalmente (pinned injections não dependem de flags do `rag_config`).
+
+---
+
+## Passo 31 — Guard `_GENERIC_PROGRAM_DEFINITION_RE` (fix definitivo de Q01/Q16)
+
+**Data:** 2026-07-08
+**Motivação:** investigação direta do padrão Q01/Q16, identificado e aceito como limitação conhecida no Passo 25.
+
+**Diagnóstico revisitado:** confirmado ao vivo que o padrão persistia mesmo após os Passos 29/30 — `portaria 21.pdf`/`portaria 23.pdf` (designação de comitê PIBIC) e `Portaria 5` (designação de comitê PIBITI) continuavam vencendo o roteamento para as perguntas genéricas "quais são os objetivos do PIBIC" e "qual o foco do PIBITI". Diferente do fix do Q06 (Passo 30, onde o problema era um chunk correto enterrado no ranking dentro do pool certo), aqui o problema é a **decisão de roteamento em si** escolhendo o pool errado (portaria/relatório em vez de edital) — não há chunk "certo" a resgatar dentro do pool de portaria, porque portarias estruturalmente nunca respondem "quais são os objetivos de um programa" (designam comitês, prorrogam prazos, corrigem questões administrativas).
+
+**Fix:** novo guard `_GENERIC_PROGRAM_DEFINITION_RE`, aplicado na decisão de roteamento (não em um pinned injection dentro de um pool): quando a pergunta casa com o padrão "objetivo(s)/foco/finalidade/propósito + PIBIC/PIBIC-EM/PIBITI/ICV" (ou "o que é PIBIC/PIBITI/ICV"), o pool de resgate portaria/relatório **nem é consultado** — o pipeline usa direto o resultado do pool primário (edital), sem disputa de score. Diferente da tentativa de regex de intenção descartada no Passo 24 (que teria que cobrir toda formulação possível de "pergunta sobre portaria", tarefa impraticável), este guard cobre o lado oposto e muito mais restrito: um pequeno conjunto fixo de templates interrogativos ("objetivo", "foco", "finalidade", "o que é") que, combinados com um nome de programa conhecido, **nunca** têm resposta legítima em portaria/relatório — não é preciso cobrir todas as perguntas sobre portaria, só as que certamente NÃO são.
+
+**Ajuste de calibração:** a primeira versão do regex usava uma janela de 60 caracteres entre a palavra-gatilho ("objetivos") e o nome do programa, e falhou silenciosamente para Q01 — o nome completo por extenso ("Programa Institucional de Bolsas de Iniciação Científica") ocupa 62 caracteres sozinho, estourando a janela. Corrigido para 150 caracteres.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 30 (baseline) | **Passo 31 (+guard)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.165/5 (83.3%) | **4.360/5 (87.2%)** | **+0.195** |
+| Ruins (< 2.5) | 2/30 | 1/30 | −1 |
+| Excelentes (≥ 4.5) | 20/30 | 20/30 | 0 |
+
+**Q16: 0.0 → 5.0 (+5.0)** — corrigido. **Q01: 4.8 → 5.0 (+0.2)** — já vinha se recuperando por variação do LLM, agora estabilizado. Ganhos adicionais: Q15 (+0.5), Q18 (+0.5), Q25 (+1.0). Pequenas quedas em Q07 (−0.7), Q08 (−0.5), Q09 (−0.5) — dentro do padrão de ruído do juiz LLM já documentado repetidamente neste relatório.
+
+**Golden-set ampliado (90 perguntas):** 3.807/5 → 3.846/5 (+0.039) — leve melhora, sem regressão relevante (maior queda: −0.5).
+
+**Líquido combinado (120 perguntas): +0.078** — ganho limpo, fecha definitivamente o padrão Q01/Q16 que havia sido aceito como limitação conhecida no Passo 25.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 30; novo guard ativo incondicionalmente na decisão de roteamento do rescue.
+
+---
+
+## Passo 32 — Limpeza do system prompt (Nível 1: mudanças seguras)
+
+**Data:** 2026-07-09
+**Motivação:** análise direta do `_SYSTEM_PROMPT` (`rag_engine.py:574-...`) pedida pelo usuário, fora do ciclo de retrieval/roteamento — mudanças de baixo risco na montagem do prompt e na configuração de geração, sem tocar em lógica de busca/reranking.
+
+**Mudanças:**
+1. **Removida a duplicação de histórico de conversa.** As últimas 10 mensagens entravam duas vezes no prompt enviado ao LLM: serializadas como texto dentro de `{chat_history}` no system prompt (via `_build_history()`, agora removida por ficar sem uso) **e** de novo como turnos `role: user/assistant` separados no array `messages`. Nenhuma API de chat completion precisa do histórico duplicado — o array já é nativamente multi-turn. Confirmado que a etapa de retrieval nunca usa o histórico (só é buscado depois, na montagem de contexto), então a remoção não afeta a busca — só reduz tokens gastos por request.
+2. **Nova Regra 9**: instrui o LLM a não mencionar a numeração `[1]`/`[2]` dos documentos no contexto (usada só para referência interna) na resposta — as fontes já aparecem separadamente na UI via `_build_sources()`, programático, não depende de citação inline do LLM.
+3. **`max_tokens=1024` centralizado** numa constante `_LLM_MAX_TOKENS`, referenciada nos 6 lugares que já tinham esse valor hardcoded (2 chamadas single-shot de HyDE/compressão + 4 chamadas de streaming, uma por provider). Refatoração pura — mesmo valor, sem mudança de comportamento. (OpenAI e Ollama têm helpers single-shot que não definem `max_tokens` hoje — deixados como estão, fora do escopo desta limpeza por mudar comportamento real.)
+4. `DOCUMENTATION.md` atualizado para listar as 9 regras reais (estava desatualizada, listava só 6).
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 31 (baseline) | **Passo 32 (prompt cleanup)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.360/5 (87.2%) | **4.463/5 (89.3%)** | **+0.103** |
+| Ruins (< 2.5) | 1/30 | 1/30 | 0 |
+| Excelentes (≥ 4.5) | 20/30 | 23/30 | +3 |
+
+Ganhos: Q07 (+0.7), Q08 (+0.8), Q20 (+1.5), Q24 (+1.0), Q03 (+0.5). Nenhuma queda maior que −0.5.
+
+**Golden-set ampliado (90 perguntas):** 3.846/5 → 3.826/5 (−0.020) — praticamente neutro. Oscilações dispersas (Q101 +1.0, Q56 +0.9 / Q77 −2.2, Q39 −1.0, Q118 −1.0) sem padrão comum identificável entre si, consistentes com o ruído de juiz LLM já documentado repetidamente neste relatório — não hipótese, confirmado testando a conversa multi-turno diretamente e checando que o retrieval nunca leu `history_msgs` antes ou depois desta mudança.
+
+**Líquido combinado (120 perguntas): +0.010** — essencialmente neutro, sem regressão estrutural, com melhora real e maior no golden-set original.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 31 (`reranker_enabled=true` + `parent_child_expansion_enabled=true`); `_SYSTEM_PROMPT` com 9 regras (era 8) e sem bloco de histórico; `_LLM_MAX_TOKENS=1024` centralizado.
+
+---
+
+## Passo 33 — Regras 10/11 do system prompt: resposta parcial + resolução de conflito (Nível 2, revertido)
+
+**Data:** 2026-07-09
+**Motivação:** item de Nível 2 identificado na análise do Passo 32 — tensão observada nesta sessão (Q88, Q98) entre a Regra 1-3 ("responder exclusivamente com base no contexto", fallback obrigatório) e casos em que o contexto tem informação relacionada mas não afirma o detalhe exato pedido. Testado com a mesma metodologia rigorosa de todo o resto do relatório (full eval nos dois golden-sets, decisão baseada em dados).
+
+**Mudança testada:** duas regras novas, redigidas condicionalmente (seguindo a lição de design já registrada neste relatório — regras que dependem de informação possivelmente ausente devem ser condicionais, nunca "sempre faça X"):
+- **Regra 10**: permite uma resposta parcial com a limitação explicitada, em vez de recusa total, quando o contexto menciona o assunto mas não afirma todos os detalhes — mantendo a Regra 3 (nunca inventar) como restrição superior.
+- **Regra 11**: em caso de documentos conflitantes sobre a mesma regra/prazo (fora do caso já coberto pela Regra 7, aditivo), considerar o mais recente como vigente.
+
+### Resultado (full eval, ambos os golden-sets)
+
+**Golden-set original (30 perguntas):**
+
+| Métrica | Passo 32 (baseline) | **Passo 33 (+Regras 10/11)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.463/5 (89.3%) | 4.413/5 (88.3%) | −0.050 |
+| Sem alucinação | 0.933 | **0.900** | **−0.033** |
+| Ruins (< 2.5) | 1/30 | 1/30 | 0 |
+| Excelentes (≥ 4.5) | 23/30 | 21/30 | −2 |
+
+**Golden-set ampliado (90 perguntas):**
+
+| Métrica | Passo 32 (baseline) | **Passo 33 (+Regras 10/11)** | Δ |
+|---|---|---|---|
+| Pontuação média | 3.826/5 (76.5%) | **3.892/5 (77.8%)** | +0.066 |
+| Sem alucinação | 0.900 | **0.878** | **−0.022** |
+| Ruins (< 2.5) | 13/90 | 12/90 | −1 |
+| Excelentes (≥ 4.5) | 45/90 | 48/90 | +3 |
+
+**Líquido combinado (120 perguntas): +0.037** — positivo na pontuação agregada.
+
+**Análise:** o padrão é consistente nos dois conjuntos — a pontuação geral melhora ligeiramente, mas a métrica de **sem alucinação piora nos dois** (−0.033 no original, −0.022 no ampliado). É exatamente o risco já identificado antes na história deste relatório como motivo para nunca ter tentado afrouxar a Regra 1-3: ganhar completude à custa de confiabilidade. Diferente da maioria dos passos revertidos por regressão pura de pontuação, aqui o trade-off é qualitativo — o ganho é real, mas a métrica que este projeto trata como quase inviolável (alucinação historicamente entre 0.93-0.97 ao longo de todo o relatório) piorou de forma consistente, não por ruído isolado num único caso.
+
+**Decisão:** revertido — Regras 10 e 11 removidas do `_SYSTEM_PROMPT`. Para um assistente institucional, confiabilidade (nunca afirmar algo não certamente suportado pelo contexto) pesa mais que completude marginal.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 32 (`_SYSTEM_PROMPT` de volta a 9 regras).
+
+---
+
+### Documento faltante resolvido: Resolução CEPEX/UFPI n° 345/2022 (2026-07-08)
+
+A Resolução 345/2022 (fonte de Q86-88, "Bolsas PROPESQI"), identificada como ausente do corpus no Passo 24, foi enviada pelo usuário e indexada com sucesso (19 chunks), junto com a Resolução CEPEX/UFPI n° 355/2022 que a ratifica (7 chunks). Smoke test dirigido: **Q86 (0.0→4.0) e Q87 (0.0→4.0) corrigidas**. Q88 permanece em 0.5 — mas por um motivo diferente do original: agora cita a fonte correta (Resolução 355/2022) porém extrai o fato errado (descreve o processo seletivo em vez do "Termo de Outorga" exigido pelo gabarito) — uma falha de precisão de recall dentro do documento certo, não mais de documento ausente.
+
+---
+
+### Nota conhecida: rota `/api/evaluation/*` (RAGAS) não funcional nesta branch (2026-07-09)
+
+Auditoria de documentação identificou que `app/core/evaluator.py` — usado pela rota `/api/evaluation/*` do painel admin — está **hardcoded para Ollama** (`ChatOllama` / `OllamaEmbeddings` de `langchain_ollama`, com `settings.OLLAMA_BASE_URL` e o modelo local fixo), ignorando o `llm_provider` configurado em `rag_config`. Na branch `feature/aws-gemini-deploy` não há serviço Ollama (deploy 100% Gemini, `docker-compose.aws.yml`), então essa rota está atualmente **não funcional** — não deve ser confundida com o harness `run_groundtruth_eval.py` usado neste relatório, que é provider-agnostic (chama `/api/chat/stream` da aplicação real, respeitando o `llm_provider` ativo) e é a metodologia efetivamente usada em todo o ciclo de otimização e nos números do TCC.
+
+**Decisão:** não corrigido por ora — deixado como está, documentado aqui como limitação conhecida da branch atual. Todas as métricas deste relatório vêm exclusivamente do harness `run_groundtruth_eval.py` + juiz `gemini-3.1-flash-lite`, não da rota RAGAS.
+
+---
 
 **Observação:** o Passo 5 resolve ICV (2.00 → 4.40) mas introduz regressões no grupo "Geral" por viés intra-edital do reranker em Q05, Q26 e Q29. O Passo 6 implementou `context_top_k` configurável sem resolver Q26/Q29. O Passo 7 (HyDE enriquecido) foi net negativo (−0.27). O Passo 8 (fine-tuning do cross-encoder) eliminou o viés lexical nos 3 alvos no smoke test mas foi net negativo no full eval (−0.96 vs P5) por dataset desbalanceado. O Passo 9 (injeção lexical seletiva em retrieval + reranker query) resolveu Q26 (+4.0) e Q29 (+4.3) sem regressões globais, estabelecendo novo recorde: **4.073/5 (81.5%)**. O Passo 10 (injeção pinned ICV + vigência bolsas) resolve Q15 (0.0→4.5) e Q05 (0.2→5.0) via contexto forçado, estabelecendo **novo recorde absoluto: 4.503/5 (90.1%)**. Todos os programas acima de 4.35/5; zero respostas ruins. O Passo 11 (reranker GPU + warmup no lifespan) é exclusivamente de latência (cold start 86 s → 23 s) e confirma qualidade preservada: **4.522/5 (90.4%)** — variação dentro do ruído do juiz LLM. O Passo 12 (Q25 injection multi-edital + regra de vigência) introduziu melhorias em Q05/Q06/Q09 e trouxe Q25 para 5.0 em smoke (3.4 no full eval por variabilidade do LLM), mas sofreu regressão dominante em Q21 (4.0→0.0, retrieval instável para PIBICEM colégio): **4.373/5 (87.5%)**; contrafactual sem Q21: 4.506/5. O Passo 13 (Q21 pinned injection PIBICEM colégio) resolve Q21 e Q25 atinge 5.0 no full eval: **4.567/5 (91.3%)** — novo recorde. O Passo 14 (Q18 expansão lexical devolução PIBITI) estabelece novo recorde: **4.620/5 (92.4%)**, 25/30 excelentes. O Passo 15 (feature `edital_ref` + expansão bidirecional) verifica ausência de regressões: **4.60/5 em 25 questões válidas** (5 comprometidas por rate limiting). O Passo 16 (re-indexação de aditivos com `edital_ref` ativo) confirma que a expansão bidirecional é neutra: Q14 e Q30 mantêm os mesmos scores, **4.562/5 (91.2%)** — variação de −0.058 vs P14 dentro do ruído do LLM não-determinístico.

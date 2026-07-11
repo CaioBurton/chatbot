@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     QDRANT_URL: str
     QDRANT_API_KEY: str
 
-    # Ollama
-    OLLAMA_BASE_URL: str
+    # Ollama — only required when llm_provider or embedding_provider is "local"
+    OLLAMA_BASE_URL: str = ""
 
     # JWT — no default for SECRET_KEY; must be supplied via env
     SECRET_KEY: str
@@ -53,6 +53,26 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     GOOGLE_API_KEY: str = ""
+
+    # LLMWhisperer (cloud OCR for scanned PDFs — no local Tesseract/OpenCV)
+    LLMWHISPERER_API_KEY: str = ""
+    LLMWHISPERER_BASE_URL: str = "https://llmwhisperer-api.us-central.unstract.com/api/v2"
+
+    # Caps concurrent document ingestions (see app/ingestion/processor.py).
+    # Keep low on small instances — each ingestion holds the reranker/BM42
+    # models and embedding batches in memory at once.
+    MAX_CONCURRENT_INGESTIONS: int = Field(1, ge=1, le=20)
+
+    # Caps concurrent /chat/stream pipelines in flight (see app/api/routes/chat.py).
+    # Each request already fans out several concurrent Gemini calls (HyDE,
+    # multi-query, contextual compression) plus a CPU-bound reranker pass —
+    # a handful of simultaneous requests on a small CPU-only instance is
+    # enough to OOM-kill the container. Extra requests simply queue.
+    MAX_CONCURRENT_CHAT_REQUESTS: int = Field(3, ge=1, le=50)
+
+    # Rate limiting — disable only for controlled test/eval runs; must stay
+    # True in production (see app/core/limiter.py e CLAUDE.md).
+    RATE_LIMIT_ENABLED: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

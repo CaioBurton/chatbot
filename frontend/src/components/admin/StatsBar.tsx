@@ -25,27 +25,27 @@ export default function StatsBar({ refreshKey }: Props) {
 
   if (error) {
     return (
-      <p className="text-sm text-red-500 dark:text-red-400">
+      <p className="text-sm text-[#c0392b] dark:text-[#e0685c]">
         Não foi possível carregar as estatísticas.
       </p>
     )
   }
 
-  const cards: Array<{ label: string; value: number | string }> = stats
+  const cards: Array<{ label: string; value: number | string; className: string }> = stats
     ? [
-        { label: 'Total', value: stats.total },
-        { label: 'Ativos', value: stats.active },
-        { label: 'Processando', value: stats.processing },
-        { label: 'Erros', value: stats.error },
-        { label: 'Chunks', value: stats.total_chunks.toLocaleString('pt-BR') },
+        { label: 'Total', value: stats.total, className: 'text-[#1e2128] dark:text-[#eceae7]' },
+        { label: 'Ativos', value: stats.active, className: 'text-[#1f9a5a] dark:text-[#4cbd82]' },
+        { label: 'Processando', value: stats.processing, className: 'text-[#b6691e] dark:text-[#e0a05c]' },
+        { label: 'Erros', value: stats.error, className: 'text-[#c0392b] dark:text-[#e0685c]' },
+        { label: 'Chunks', value: stats.total_chunks.toLocaleString('pt-BR'), className: 'text-[#1e2128] dark:text-[#eceae7]' },
       ]
     : []
 
   return (
-    <div className="flex flex-wrap gap-3 relative">
+    <div className="relative grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
       {/* Subtle overlay spinner on background re-fetches (stats already loaded) */}
       {fetching && stats !== null && (
-        <span className="absolute right-0 -top-5 text-[10px] text-[#aaa] dark:text-[#666] animate-pulse">
+        <span className="absolute right-0 -top-5 animate-pulse text-[10px] text-[#a19e96] dark:text-[#6c717a]">
           atualizando…
         </span>
       )}
@@ -53,18 +53,18 @@ export default function StatsBar({ refreshKey }: Props) {
         ? Array.from({ length: 5 }).map((_, i) => (
             <div
               key={i}
-              className="h-16 w-32 animate-pulse rounded-lg bg-[#eee] dark:bg-[#3a3a3a]"
+              className="h-[72px] animate-pulse rounded-[14px] bg-[#f2efe8] dark:bg-[#262b32]"
             />
           ))
         : cards.map(c => (
             <div
               key={c.label}
-              className="flex flex-col items-center justify-center rounded-lg border border-[#ddd] dark:border-[#444] bg-[#fafafa] dark:bg-[#2d2d2d] px-5 py-3 min-w-[100px]"
+              className="flex flex-col gap-1 rounded-[14px] border border-[#e6e1d5] dark:border-[#33383f] bg-white dark:bg-[#1d2126] p-4"
             >
-              <span className="text-xl font-semibold text-[#111] dark:text-[#e8e8e8]">
+              <span className={`font-serif text-[26px] font-semibold leading-none ${c.className}`}>
                 {c.value}
               </span>
-              <span className="text-xs text-[#777] dark:text-[#aaa]">{c.label}</span>
+              <span className="text-xs text-[#6c7078] dark:text-[#9da2aa]">{c.label}</span>
             </div>
           ))}
     </div>

@@ -20,7 +20,7 @@ const markdownComponents: Components = {
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="text-[#0078d4] dark:text-[#4da8e8] underline hover:opacity-80"
+      className="text-[#2c4a86] dark:text-[#8596b9] underline hover:opacity-80"
     >
       {children}
     </a>
@@ -77,8 +77,8 @@ export default function MessageBubble({ message, onFeedback }: Props) {
   const hasContent = message.content.length > 0
 
   const bubbleClasses = isUser
-    ? 'bg-[#0078d4] dark:bg-[#1a6db5] text-white'
-    : 'bg-[#f0f0f0] dark:bg-[#3a3a3a] text-[#111] dark:text-[#e8e8e8]'
+    ? 'bg-[#2c4a86] dark:bg-[#8596b9] text-white dark:text-[#101317]'
+    : 'bg-[#f2efe8] dark:bg-[#262b32] text-[#1e2128] dark:text-[#eceae7]'
 
   const handleCopy = () => {
     if (!navigator.clipboard) return
@@ -97,9 +97,9 @@ export default function MessageBubble({ message, onFeedback }: Props) {
   }
 
   return (
-    <div className={`flex mb-3 animate-fade-in ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex mb-3.5 animate-fade-in ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[70%] py-3 px-4 ${isUser ? 'rounded-[1rem_1rem_0_1rem] whitespace-pre-wrap' : 'rounded-[1rem_1rem_1rem_0]'} ${bubbleClasses} break-words leading-[1.5]`}
+        className={`max-w-[72%] py-[11px] px-4 ${isUser ? 'rounded-[16px_16px_4px_16px] whitespace-pre-wrap' : 'rounded-[4px_16px_16px_16px]'} ${bubbleClasses} break-words leading-[1.55] text-[15px]`}
       >
         {message.content ? (
           isUser ? (
@@ -110,7 +110,11 @@ export default function MessageBubble({ message, onFeedback }: Props) {
             </Markdown>
           )
         ) : (
-          <span className="inline-block w-0.5 h-4 bg-current animate-blink" />
+          <div className="flex gap-1 py-1 px-0.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-current inline-block animate-pp-bounce" />
+            <span className="w-1.5 h-1.5 rounded-full bg-current inline-block animate-pp-bounce [animation-delay:0.15s]" />
+            <span className="w-1.5 h-1.5 rounded-full bg-current inline-block animate-pp-bounce [animation-delay:0.3s]" />
+          </div>
         )}
 
         {!isUser && hasContent && (
@@ -120,7 +124,7 @@ export default function MessageBubble({ message, onFeedback }: Props) {
               onClick={() => handleFeedback('up')}
               disabled={feedbackValue !== null}
               title="Resposta útil"
-              className={`border-0 font-[inherit] p-[0.1rem_0.3rem] rounded text-[0.85rem] text-[#111] dark:text-[#e8e8e8] transition-transform hover:scale-110 active:scale-95 ${feedbackValue === 'up' ? 'bg-[#d4edda] dark:bg-[#2d6a2d]' : 'bg-transparent'}`}
+              className={`border-0 font-[inherit] p-[0.1rem_0.3rem] rounded text-[0.85rem] transition-transform hover:scale-110 active:scale-95 ${feedbackValue === 'up' ? 'bg-[#e8edf7] dark:bg-[#182236] text-[#2c4a86] dark:text-[#8596b9]' : 'bg-transparent text-[#1e2128] dark:text-[#eceae7]'}`}
               style={{
                 opacity: feedbackValue !== null && feedbackValue !== 'up' ? 0.35 : 1,
                 cursor: feedbackValue !== null ? 'default' : 'pointer',
@@ -133,7 +137,7 @@ export default function MessageBubble({ message, onFeedback }: Props) {
               onClick={() => handleFeedback('down')}
               disabled={feedbackValue !== null}
               title="Resposta não útil"
-              className={`border-0 font-[inherit] p-[0.1rem_0.3rem] rounded text-[0.85rem] text-[#111] dark:text-[#e8e8e8] transition-transform hover:scale-110 active:scale-95 ${feedbackValue === 'down' ? 'bg-[#f8d7da] dark:bg-[#6a2d2d]' : 'bg-transparent'}`}
+              className={`border-0 font-[inherit] p-[0.1rem_0.3rem] rounded text-[0.85rem] transition-transform hover:scale-110 active:scale-95 ${feedbackValue === 'down' ? 'bg-[#e8edf7] dark:bg-[#182236] text-[#2c4a86] dark:text-[#8596b9]' : 'bg-transparent text-[#1e2128] dark:text-[#eceae7]'}`}
               style={{
                 opacity: feedbackValue !== null && feedbackValue !== 'down' ? 0.35 : 1,
                 cursor: feedbackValue !== null ? 'default' : 'pointer',
@@ -149,7 +153,7 @@ export default function MessageBubble({ message, onFeedback }: Props) {
             <button
               type="button"
               onClick={handleCopy}
-              className="border-0 bg-transparent font-[inherit] cursor-pointer p-[0.1rem_0.3rem] rounded text-[0.72rem] opacity-60 text-[#555] dark:text-[#c0c0c0] flex items-center gap-1 hover:opacity-100 transition-opacity"
+              className="border-0 bg-transparent font-[inherit] cursor-pointer p-[0.1rem_0.3rem] rounded text-[11px] text-[#a19e96] dark:text-[#6c717a] flex items-center gap-1 hover:text-[#6c7078] dark:hover:text-[#9da2aa] transition-colors"
             >
               {copied ? <Check size={12} /> : <Copy size={12} />}
               {copied ? 'Copiado!' : 'Copiar'}

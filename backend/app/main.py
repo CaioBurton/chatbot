@@ -23,14 +23,24 @@ async def _warmup() -> None:
     """Pre-load all inference models at startup so the first user request is fast."""
     import asyncio
     from app.core.embeddings import generate_dense_embeddings
+    from app.db.postgres import AsyncSessionLocal
+    from app.db.rag_config import get_rag_config
     from app.db.reranker import rerank
     from app.ingestion.sparse import get_sparse_encoder
     from qdrant_client.models import ScoredPoint
 
-    # bge-m3 (Ollama dense embeddings) + BM42 (fastembed sparse) run in parallel
+    # Only warm the Ollama dense-embedding model when it's actually the
+    # configured provider — avoids a pointless call to a local Ollama service
+    # that may not exist (e.g. Gemini-only cloud deployments).
     async def _warm_bge():
         try:
-            await generate_dense_embeddings(["warmup"], provider="local", model="bge-m3", settings=settings)
+            async with AsyncSessionLocal() as db:
+                cfg = await get_rag_config(db)
+            if cfg.embedding_provider != "local":
+                return
+            await generate_dense_embeddings(
+                ["warmup"], provider="local", model=cfg.embedding_model, settings=settings
+            )
         except Exception:
             pass
 

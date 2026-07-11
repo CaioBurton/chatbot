@@ -1,26 +1,35 @@
 import { useCallback, useEffect, useState } from 'react'
-import { RefreshCw, Trash2, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
+import { RefreshCw, Trash2, Pencil, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import { authFetch, API_BASE, type DocumentListItem } from '../../lib/api'
+import EditMetadataModal from './EditMetadataModal'
 
-const PAGE_SIZE = 20
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
+const DEFAULT_PAGE_SIZE = 20
 
 interface Props {
   refreshKey?: number
   onChanged: () => void
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  active: 'ativo',
+  processing: 'processando',
+  error: 'erro',
+  uploaded: 'enviado',
+}
+
 const STATUS_BADGE: Record<string, string> = {
-  active:     'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
-  processing: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  error:      'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-  uploaded:   'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  active:     'bg-[#e3f6ec] text-[#1f9a5a] dark:bg-[#173226] dark:text-[#4cbd82]',
+  processing: 'bg-[#fbeee0] text-[#b6691e] dark:bg-[#3a2c1a] dark:text-[#e0a05c]',
+  error:      'bg-[#fbeae7] text-[#c0392b] dark:bg-[#3a1f1c] dark:text-[#e0685c]',
+  uploaded:   'bg-[#e8edf7] text-[#2c4a86] dark:bg-[#182236] dark:text-[#8596b9]',
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const cls = STATUS_BADGE[status] ?? 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+  const cls = STATUS_BADGE[status] ?? 'bg-[#f2efe8] text-[#6c7078] dark:bg-[#262b32] dark:text-[#9da2aa]'
   return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>
-      {status}
+    <span className={`rounded-full px-[9px] py-0.5 text-[11px] font-semibold ${cls}`}>
+      {STATUS_LABEL[status] ?? status}
     </span>
   )
 }
@@ -42,23 +51,25 @@ function formatDate(iso: string): string {
 export default function DocumentTable({ refreshKey, onChanged }: Props) {
   const [docs, setDocs] = useState<DocumentListItem[]>([])
   const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
+  const [editing, setEditing] = useState<DocumentListItem | null>(null)
 
   const load = useCallback(
-    (pageIndex: number) => {
+    (pageIndex: number, size: number) => {
       setLoading(true)
       setError(false)
-      const skip = pageIndex * PAGE_SIZE
-      authFetch(`${API_BASE}/documents?skip=${skip}&limit=${PAGE_SIZE + 1}`)
+      const skip = pageIndex * size
+      authFetch(`${API_BASE}/documents?skip=${skip}&limit=${size + 1}`)
         .then(res => {
           if (!res.ok) throw new Error('list error')
           return res.json() as Promise<DocumentListItem[]>
         })
         .then(data => {
-          setHasMore(data.length > PAGE_SIZE)
-          setDocs(data.slice(0, PAGE_SIZE))
+          setHasMore(data.length > size)
+          setDocs(data.slice(0, size))
         })
         .catch(() => setError(true))
         .finally(() => setLoading(false))
@@ -68,13 +79,17 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
 
   useEffect(() => {
     setPage(0)
-    load(0)
-  }, [refreshKey, load])
+    load(0, pageSize)
+  }, [refreshKey, load, pageSize])
 
   const changePage = (delta: number) => {
     const next = page + delta
     setPage(next)
-    load(next)
+    load(next, pageSize)
+  }
+
+  const changePageSize = (size: number) => {
+    setPageSize(size)
   }
 
   const handleDelete = (doc: DocumentListItem) => {
@@ -83,7 +98,7 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
       .then(res => {
         if (!res.ok) throw new Error('delete error')
         onChanged()
-        load(page)
+        load(page, pageSize)
       })
       .catch(() => alert('Falha ao excluir documento.'))
   }
@@ -95,14 +110,35 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
       .then(res => {
         if (!res.ok) throw new Error('reindex error')
         onChanged()
-        load(page)
+        load(page, pageSize)
       })
       .catch(() => alert('Falha ao reindexar documento.'))
   }
 
+  const handleUpdateMetadata = (docType: string, editalRef: string, editalCycle: string) => {
+    const doc = editing
+    if (!doc) return
+    authFetch(`${API_BASE}/documents/${encodeURIComponent(doc.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        doc_type: docType,
+        edital_ref: editalRef || null,
+        edital_cycle: editalCycle || null,
+      }),
+    })
+      .then(res => {
+        if (!res.ok) throw new Error('update error')
+        setEditing(null)
+        onChanged()
+        load(page, pageSize)
+      })
+      .catch(() => alert('Falha ao atualizar classificação do documento.'))
+  }
+
   if (error) {
     return (
-      <p className="text-sm text-red-500 dark:text-red-400">
+      <p className="text-sm text-[#c0392b] dark:text-[#e0685c]">
         Não foi possível carregar os documentos.
       </p>
     )
@@ -110,14 +146,14 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="overflow-x-auto rounded-xl border border-[#ddd] dark:border-[#444]">
-        <table className="min-w-full text-sm text-[#111] dark:text-[#e8e8e8]">
+      <div className="overflow-x-auto rounded-[14px] border border-[#e6e1d5] dark:border-[#33383f]">
+        <table className="min-w-full text-[13.5px] text-[#1e2128] dark:text-[#eceae7]">
           <thead>
-            <tr className="border-b border-[#ddd] dark:border-[#444] bg-[#f5f5f5] dark:bg-[#2a2a2a]">
+            <tr className="bg-[#f2efe8] dark:bg-[#262b32]">
               {['Nome', 'Tipo', 'Status', 'Chunks', 'Data', 'Ações'].map(h => (
                 <th
                   key={h}
-                  className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-[#555] dark:text-[#aaa]"
+                  className="px-3.5 py-2.5 text-left text-[11px] font-bold uppercase tracking-wide text-[#a19e96] dark:text-[#6c717a]"
                 >
                   {h}
                 </th>
@@ -127,14 +163,14 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-[#777] dark:text-[#aaa]">
+                <td colSpan={6} className="px-4 py-8 text-center text-[#a19e96] dark:text-[#6c717a]">
                   Carregando…
                 </td>
               </tr>
             )}
             {!loading && docs.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-[#777] dark:text-[#aaa]">
+                <td colSpan={6} className="px-4 py-8 text-center text-[#a19e96] dark:text-[#6c717a]">
                   Nenhum documento encontrado.
                 </td>
               </tr>
@@ -143,9 +179,9 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
               docs.map(doc => (
                 <tr
                   key={doc.id}
-                  className="border-b border-[#eee] dark:border-[#383838] last:border-0 hover:bg-[#f9f9f9] dark:hover:bg-[#333]"
+                  className="border-t border-[#e6e1d5] dark:border-[#33383f] hover:bg-[#eae6dc] dark:hover:bg-[#2c313a] transition-colors"
                 >
-                  <td className="max-w-[240px] overflow-hidden text-ellipsis whitespace-nowrap px-4 py-2">
+                  <td className="max-w-[240px] overflow-hidden text-ellipsis whitespace-nowrap px-3.5 py-2.5">
                     <span className="inline-flex items-center gap-1.5">
                       {doc.display_name}
                       {doc.source_url && (
@@ -154,32 +190,42 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
                           target="_blank"
                           rel="noopener noreferrer"
                           title={doc.source_url}
-                          className="text-[#0078d4] hover:text-[#005a9e] shrink-0"
+                          className="shrink-0 text-[#2c4a86] hover:text-[#20396a] dark:text-[#8596b9] dark:hover:text-[#abb7cf]"
                         >
                           <ExternalLink size={12} />
                         </a>
                       )}
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-xs text-[#777] dark:text-[#aaa]">
+                  <td className="px-3.5 py-2.5 text-xs text-[#a19e96] dark:text-[#6c717a]">
                     {doc.file_type}
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="px-3.5 py-2.5">
                     <StatusBadge status={doc.status} />
                   </td>
-                  <td className="px-4 py-2 tabular-nums">
+                  <td className="px-3.5 py-2.5 tabular-nums text-[#6c7078] dark:text-[#9da2aa]">
                     {doc.total_chunks ?? '—'}
                   </td>
-                  <td className="px-4 py-2 whitespace-nowrap text-xs text-[#777] dark:text-[#aaa]">
+                  <td className="whitespace-nowrap px-3.5 py-2.5 text-xs text-[#a19e96] dark:text-[#6c717a]">
                     {formatDate(doc.created_at)}
                   </td>
-                  <td className="px-4 py-2">
-                    <div className="flex gap-2">
+                  <td className="px-3.5 py-2.5">
+                    <div className="flex gap-1.5">
+                      {doc.status !== 'processing' && (
+                        <button
+                          type="button"
+                          onClick={() => setEditing(doc)}
+                          className="flex cursor-pointer items-center gap-1 rounded-[7px] border border-[#6c7078] dark:border-[#9da2aa] px-2 py-[3px] text-[11.5px] text-[#6c7078] dark:text-[#9da2aa] transition-colors hover:bg-[#eae6dc] dark:hover:bg-[#2c313a]"
+                        >
+                          <Pencil size={11} />
+                          Editar
+                        </button>
+                      )}
                       {(doc.status === 'error' || doc.status === 'uploaded') && (
                         <button
                           type="button"
                           onClick={() => handleReindex(doc)}
-                          className="rounded border border-[#0078d4] px-2 py-0.5 text-xs text-[#0078d4] hover:bg-[#e3f2fd] dark:hover:bg-[#1a4a6e] cursor-pointer flex items-center gap-1 transition-colors"
+                          className="flex cursor-pointer items-center gap-1 rounded-[7px] border border-[#2c4a86] dark:border-[#8596b9] px-2 py-[3px] text-[11.5px] text-[#2c4a86] dark:text-[#8596b9] transition-colors hover:bg-[#e8edf7] dark:hover:bg-[#182236]"
                         >
                           <RefreshCw size={11} />
                           Reindexar
@@ -188,7 +234,7 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
                       <button
                         type="button"
                         onClick={() => handleDelete(doc)}
-                        className="rounded border border-red-400 px-2 py-0.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 cursor-pointer flex items-center gap-1 transition-colors"
+                        className="flex cursor-pointer items-center gap-1 rounded-[7px] border border-[#c0392b] dark:border-[#e0685c] px-2 py-[3px] text-[11.5px] text-[#c0392b] dark:text-[#e0685c] transition-colors hover:bg-[#fbeae7] dark:hover:bg-[#3a1f1c]"
                       >
                         <Trash2 size={11} />
                         Excluir
@@ -202,27 +248,50 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
       </div>
 
       {/* Pagination */}
-      <div className="flex items-center gap-3 text-sm text-[#555] dark:text-[#aaa]">
-        <button
-          type="button"
-          disabled={page === 0 || loading}
-          onClick={() => changePage(-1)}
-          className="rounded border border-[#ddd] dark:border-[#444] px-3 py-1 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed hover:bg-[#f5f5f5] dark:hover:bg-[#333] flex items-center gap-1 transition-colors"
-        >
-          <ChevronLeft size={14} />
-          Anterior
-        </button>
-        <span>Página {page + 1}</span>
-        <button
-          type="button"
-          disabled={!hasMore || loading}
-          onClick={() => changePage(1)}
-          className="rounded border border-[#ddd] dark:border-[#444] px-3 py-1 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed hover:bg-[#f5f5f5] dark:hover:bg-[#333] flex items-center gap-1 transition-colors"
-        >
-          Próxima
-          <ChevronRight size={14} />
-        </button>
+      <div className="flex items-center justify-between gap-3 text-sm text-[#6c7078] dark:text-[#9da2aa]">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            disabled={page === 0 || loading}
+            onClick={() => changePage(-1)}
+            className="flex cursor-pointer items-center gap-1 rounded-lg border border-[#e6e1d5] dark:border-[#33383f] px-3 py-1 transition-colors hover:bg-[#eae6dc] dark:hover:bg-[#2c313a] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <ChevronLeft size={14} />
+            Anterior
+          </button>
+          <span>Página {page + 1}</span>
+          <button
+            type="button"
+            disabled={!hasMore || loading}
+            onClick={() => changePage(1)}
+            className="flex cursor-pointer items-center gap-1 rounded-lg border border-[#e6e1d5] dark:border-[#33383f] px-3 py-1 transition-colors hover:bg-[#eae6dc] dark:hover:bg-[#2c313a] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Próxima
+            <ChevronRight size={14} />
+          </button>
+        </div>
+        <label className="flex items-center gap-2">
+          Itens por página
+          <select
+            value={pageSize}
+            disabled={loading}
+            onChange={e => changePageSize(Number(e.target.value))}
+            className="rounded-lg border border-[#e6e1d5] dark:border-[#33383f] bg-[#fdfcfa] dark:bg-[#16181c] px-2 py-1 text-sm text-[#1e2128] dark:text-[#eceae7] outline-none focus:border-[#2c4a86] dark:focus:border-[#8596b9] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {PAGE_SIZE_OPTIONS.map(size => (
+              <option key={size} value={size}>{size}</option>
+            ))}
+          </select>
+        </label>
       </div>
+
+      {editing && (
+        <EditMetadataModal
+          doc={editing}
+          onConfirm={handleUpdateMetadata}
+          onCancel={() => setEditing(null)}
+        />
+      )}
     </div>
   )
 }

@@ -49,23 +49,24 @@ DEFAULT_INPUT = Path(__file__).with_name("groundtruth_chatbot_rag.csv")
 DEFAULT_OUTPUT = Path(__file__).with_name("groundtruth_chatbot_rag_resultados.csv")
 DEFAULT_BASE_URL = "http://localhost:3000/api"
 
-# gemini-3.1-flash-lite free tier: 15 requests/minute. Each row makes two
-# Gemini calls (one inside /chat/stream for the answer, one for the judge),
-# so pace every Gemini-consuming call to stay under the limit.
-_GEMINI_RPM = 15
-# With HyDE + multi-query enabled, each /chat/stream internally fires up to 3
-# Gemini calls (HyDE, reformulations, final generation) plus 1 judge call = 4
-# total per row. When Gemini fails fast (429), requests cycle at the rate of
-# 1 per _MIN_GEMINI_INTERVAL, so the effective RPM = 4/_MIN_GEMINI_INTERVAL*60.
-# Setting CALLS_PER_ROW=5 (with 1-call safety margin) gives 20s minimum
-# interval → 4 calls / 20s = 12 RPM, safely under the 15 RPM limit even when
-# all backend calls fail instantly.
-_GEMINI_CALLS_PER_ROW = 5  # 3 backend (HyDE + multi-query + generation) + 1 judge + 1 margin
-_MIN_GEMINI_INTERVAL = max(
-    (60.0 / _GEMINI_RPM) * _GEMINI_CALLS_PER_ROW,  # RPM budget: 20s
-    35.0,  # hard floor: gemini-3.1-flash-lite retry window is ~30s; 35s gives safe margin
-)
+# Tier 1 billing gives much higher RPM headroom than the free tier, so calls
+# are no longer artificially paced. _request_with_retries() still backs off
+# on transient 429s.
+_MIN_GEMINI_INTERVAL = 0.0
 _last_gemini_call = 0.0
+
+# app/api/routes/chat.py caps POST /chat/stream at 5/minute per client IP
+# (slowapi), unless RATE_LIMIT_ENABLED=false in the backend's .env for a
+# controlled eval run. With every RAG technique disabled the pipeline can
+# answer in under a second, so firing the 30 groundtruth questions
+# back-to-back trips that cap long before it ever did with
+# HyDE/multiquery/rerank in the loop (~13s/question naturally kept us under
+# it). Pace to slightly over 12s between /chat/stream calls by default so
+# this harness respects the same limit real clients face, regardless of how
+# fast the configured pipeline happens to be. Override via
+# EVAL_CHAT_STREAM_INTERVAL=0 once the backend's rate limiter is disabled.
+_MIN_CHAT_STREAM_INTERVAL = float(os.environ.get("EVAL_CHAT_STREAM_INTERVAL", "12.5"))
+_last_chat_stream_call = 0.0
 
 
 def _rate_limit_gemini() -> None:
@@ -75,6 +76,15 @@ def _rate_limit_gemini() -> None:
     if wait > 0:
         time.sleep(wait)
     _last_gemini_call = time.monotonic()
+
+
+def _rate_limit_chat_stream() -> None:
+    global _last_chat_stream_call
+    now = time.monotonic()
+    wait = _MIN_CHAT_STREAM_INTERVAL - (now - _last_chat_stream_call)
+    if wait > 0:
+        time.sleep(wait)
+    _last_chat_stream_call = time.monotonic()
 
 FIELDNAMES = [
     "id", "programa", "categoria", "dificuldade", "tipo_resposta", "pergunta",
@@ -135,7 +145,7 @@ def call_chat_stream(client: httpx.Client, base_url: str, question: str) -> tupl
     event_type: str | None = None
     data_lines: list[str] = []
 
-    _rate_limit_gemini()
+    _rate_limit_chat_stream()
     with client.stream(
         "POST", f"{base_url}/chat/stream", json={"message": question}, timeout=180.0
     ) as resp:

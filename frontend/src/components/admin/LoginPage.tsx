@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
-import { Lock, Loader2, ArrowLeft } from 'lucide-react'
-import propesqiLogo from '../../images/propesqi_horizontal azul.png'
+import { Loader2, ArrowLeft } from 'lucide-react'
+import propesqiMark from '../../images/propesqi_perfil azul 2.png'
 
 interface Props {
   login: (email: string, password: string) => Promise<void>
@@ -34,55 +34,52 @@ export default function LoginPage({ login, onSuccess, onBackToChat }: Props) {
   }
 
   return (
-    <div className="flex h-screen items-center justify-center bg-white dark:bg-[#1e1e1e]">
-      <div className="w-full max-w-sm rounded-2xl border border-[#ddd] dark:border-[#444] bg-[#fafafa] dark:bg-[#2d2d2d] p-8 shadow-xl">
-        <div className="dark:bg-white rounded-md px-3 py-2 mx-auto mb-6 w-fit">
-          <img src={propesqiLogo} alt="PROPESQI - Pró-Reitoria de Pesquisa e Inovação" className="h-14 w-auto block" />
-        </div>
-        <h1 className="mb-6 text-xl font-semibold text-[#111] dark:text-[#e8e8e8] flex items-center justify-center gap-2">
-          <Lock size={18} className="text-[#0078d4]" />
+    <div className="flex min-h-screen items-center justify-center bg-[#fdfcfa] dark:bg-[#16181c] p-6">
+      <div className="w-full max-w-[380px] rounded-[20px] border border-[#e6e1d5] dark:border-[#33383f] bg-white dark:bg-[#1d2126] px-8 pt-9 pb-[30px] shadow-[0_12px_32px_rgba(30,25,15,0.08)] dark:shadow-[0_12px_32px_rgba(0,0,0,0.4)] animate-fade-in">
+        <img
+          src={propesqiMark}
+          alt="PROPESQI"
+          className="mx-auto mb-[18px] block h-16 w-16 rounded-full object-cover"
+        />
+        <h1 className="mb-1 text-center font-serif text-[21px] font-semibold text-[#1e2128] dark:text-[#eceae7]">
           Painel de Administração
         </h1>
+        <p className="mb-[26px] text-center text-[13px] text-[#6c7078] dark:text-[#9da2aa]">
+          PROPESQI · Pesquisa &amp; Inovação · UFPI
+        </p>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1">
-            <label
-              htmlFor="admin-email"
-              className="text-sm text-[#555] dark:text-[#aaa]"
-            >
+        <form onSubmit={handleSubmit} className="flex flex-col gap-[14px]">
+          <label className="flex flex-col gap-[5px]">
+            <span className="text-[12.5px] font-semibold text-[#6c7078] dark:text-[#9da2aa]">
               E-mail
-            </label>
+            </span>
             <input
-              id="admin-email"
               type="email"
-              autoComplete="username"
               required
+              autoComplete="username"
               value={email}
               onChange={e => setEmail(e.target.value)}
-              className="rounded-lg border border-[#ddd] dark:border-[#555] bg-white dark:bg-[#1e1e1e] px-3 py-2 text-sm text-[#111] dark:text-[#e8e8e8] outline-none focus:border-[#0078d4]"
+              placeholder="seuemail@ufpi.edu.br"
+              className="w-full rounded-[11px] border-[1.5px] border-[#e6e1d5] dark:border-[#33383f] bg-[#fdfcfa] dark:bg-[#16181c] px-[13px] py-2.5 text-sm text-[#1e2128] dark:text-[#eceae7] outline-none transition-colors focus:border-[#2c4a86] dark:focus:border-[#8596b9]"
             />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label
-              htmlFor="admin-password"
-              className="text-sm text-[#555] dark:text-[#aaa]"
-            >
+          </label>
+          <label className="flex flex-col gap-[5px]">
+            <span className="text-[12.5px] font-semibold text-[#6c7078] dark:text-[#9da2aa]">
               Senha
-            </label>
+            </span>
             <input
-              id="admin-password"
               type="password"
-              autoComplete="current-password"
               required
+              autoComplete="current-password"
               value={password}
               onChange={e => setPassword(e.target.value)}
-              className="rounded-lg border border-[#ddd] dark:border-[#555] bg-white dark:bg-[#1e1e1e] px-3 py-2 text-sm text-[#111] dark:text-[#e8e8e8] outline-none focus:border-[#0078d4]"
+              placeholder="••••••••"
+              className="w-full rounded-[11px] border-[1.5px] border-[#e6e1d5] dark:border-[#33383f] bg-[#fdfcfa] dark:bg-[#16181c] px-[13px] py-2.5 text-sm text-[#1e2128] dark:text-[#eceae7] outline-none transition-colors focus:border-[#2c4a86] dark:focus:border-[#8596b9]"
             />
-          </div>
+          </label>
 
           {error && (
-            <p className="rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+            <p className="m-0 rounded-[10px] border border-[#c0392b] dark:border-[#e0685c] bg-[#fbeae7] dark:bg-[#3a1f1c] px-3 py-[9px] text-[12.5px] text-[#c0392b] dark:text-[#e0685c]">
               {error}
             </p>
           )}
@@ -90,7 +87,7 @@ export default function LoginPage({ login, onSuccess, onBackToChat }: Props) {
           <button
             type="submit"
             disabled={loading}
-            className="mt-1 rounded-lg bg-[#0078d4] px-4 py-2 text-sm font-medium text-white hover:bg-[#006cbe] disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
+            className="mt-1 flex w-full items-center justify-center gap-2 rounded-[11px] bg-[#2c4a86] px-3.5 py-[11px] text-sm font-semibold text-white transition-colors hover:bg-[#20396a] disabled:cursor-not-allowed disabled:opacity-70"
           >
             {loading ? (
               <><Loader2 size={14} className="animate-spin" />Entrando…</>
@@ -103,7 +100,7 @@ export default function LoginPage({ login, onSuccess, onBackToChat }: Props) {
         <button
           type="button"
           onClick={onBackToChat}
-          className="mt-4 w-full inline-flex items-center justify-center gap-1 text-sm text-[#0078d4] hover:underline cursor-pointer bg-transparent border-0 p-0"
+          className="mt-[18px] flex w-full cursor-pointer items-center justify-center gap-1.5 border-0 bg-transparent p-1 text-[13px] font-semibold text-[#2c4a86] dark:text-[#8596b9] hover:underline"
         >
           <ArrowLeft size={14} />
           Voltar ao chat
