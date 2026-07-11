@@ -25,8 +25,8 @@ Sem GPU e **sem o serviço Ollama** — LLM e embeddings densos são ambos servi
 git clone <url-do-repositorio>
 cd chatbot
 
-# 2. Configure as variáveis de ambiente
-cp .env.example .env
+# 2. Configure as variáveis de ambiente (template específico do modo AWS/cloud)
+cp .env.aws.example .env
 # Edite .env e substitua todos os CHANGE_ME por valores reais
 
 # 3. Gere uma SECRET_KEY segura (≥ 32 caracteres)
@@ -93,7 +93,7 @@ Query → Normalização → HyDE → Multi-query → Hybrid Search RRF
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Primeiro usuário admin (criado no startup) |
 | `QDRANT_URL` | URL interna do Qdrant (`http://qdrant:6333`) |
 | `QDRANT_API_KEY` | Chave de autenticação do Qdrant (≥ 32 chars) |
-| `OLLAMA_BASE_URL` | URL interna do Ollama (`http://ollama:11434`) |
+| `OLLAMA_BASE_URL` | Opcional — só é necessária se `llm_provider`/`embedding_provider` for `local`. Não há serviço Ollama no `docker-compose.aws.yml` desta branch, então fica vazia/não usada |
 | `SECRET_KEY` | Chave para assinatura JWT (≥ 32 chars) |
 | `ALGORITHM` | Algoritmo JWT (padrão: `HS256`) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Validade do access token (padrão: 60) |
@@ -229,7 +229,6 @@ chatbot/
 - **Segredos:** nunca comite o arquivo `.env`. Use um gerenciador de segredos ou variáveis de ambiente do sistema em produção.
 - **CORS:** restrinja `ALLOWED_ORIGINS` ao hostname real do frontend em produção.
 - **Uploads grandes:** PDFs escaneados podem levar vários minutos. O timeout de upload no nginx deve ser ajustado adequadamente.
-- **VRAM:** `OLLAMA_NUM_PARALLEL=1` evita OOM em GPUs com 16 GB. Aumentar apenas se houver VRAM disponível. No modo híbrido (Gemini/OpenAI para LLM), o Ollama ainda é usado para embeddings (`bge-m3`) mas não carrega o gemma3:12b, liberando toda a VRAM.
 - **RAM em instâncias CPU-only (modo cloud/AWS):** sem GPU, o reranker e o BM42 competem por RAM com o resto do backend. `MAX_CONCURRENT_CHAT_REQUESTS` (padrão 3) e `MAX_CONCURRENT_INGESTIONS` (padrão 1) limitam quantas requisições de chat/uploads rodam ao mesmo tempo — baixe esses valores em instâncias pequenas (ex.: 2 vCPU/8 GiB) para evitar OOM kill do container sob carga concorrente.
 - **fastembed BM42:** baixa ~100 MB de modelo na primeira execução. Em ambientes offline, pré-baixe e monte como volume Docker.
 - **Qdrant:** se a coleção existente tiver configuração legada (vetor único), `ensure_collection()` **recria a coleção** — todos os dados indexados são perdidos. Faça backup antes de migrar.
