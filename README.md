@@ -229,6 +229,7 @@ chatbot/
 - **Segredos:** nunca comite o arquivo `.env`. Use um gerenciador de segredos ou variáveis de ambiente do sistema em produção.
 - **CORS:** restrinja `ALLOWED_ORIGINS` ao hostname real do frontend em produção.
 - **Uploads grandes:** PDFs escaneados podem levar vários minutos. O timeout de upload no nginx deve ser ajustado adequadamente.
+- **VRAM:** `OLLAMA_NUM_PARALLEL=1` evita OOM em GPUs com 16 GB. Aumentar apenas se houver VRAM disponível. No modo híbrido (Gemini/OpenAI para LLM), o Ollama ainda é usado para embeddings (`bge-m3`) mas não carrega o gemma3:12b, liberando toda a VRAM.
 - **RAM em instâncias CPU-only (modo cloud/AWS):** sem GPU, o reranker e o BM42 competem por RAM com o resto do backend. `MAX_CONCURRENT_CHAT_REQUESTS` (padrão 3) e `MAX_CONCURRENT_INGESTIONS` (padrão 1) limitam quantas requisições de chat/uploads rodam ao mesmo tempo — baixe esses valores em instâncias pequenas (ex.: 2 vCPU/8 GiB) para evitar OOM kill do container sob carga concorrente.
 - **fastembed BM42:** baixa ~100 MB de modelo na primeira execução. Em ambientes offline, pré-baixe e monte como volume Docker.
 - **Qdrant:** se a coleção existente tiver configuração legada (vetor único), `ensure_collection()` **recria a coleção** — todos os dados indexados são perdidos. Faça backup antes de migrar.
