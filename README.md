@@ -25,8 +25,8 @@ Sem GPU e **sem o serviço Ollama** — LLM e embeddings densos são ambos servi
 git clone <url-do-repositorio>
 cd chatbot
 
-# 2. Configure as variáveis de ambiente
-cp .env.example .env
+# 2. Configure as variáveis de ambiente (template específico do modo AWS/cloud)
+cp .env.aws.example .env
 # Edite .env e substitua todos os CHANGE_ME por valores reais
 
 # 3. Gere uma SECRET_KEY segura (≥ 32 caracteres)
@@ -93,7 +93,7 @@ Query → Normalização → HyDE → Multi-query → Hybrid Search RRF
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Primeiro usuário admin (criado no startup) |
 | `QDRANT_URL` | URL interna do Qdrant (`http://qdrant:6333`) |
 | `QDRANT_API_KEY` | Chave de autenticação do Qdrant (≥ 32 chars) |
-| `OLLAMA_BASE_URL` | URL interna do Ollama (`http://ollama:11434`) |
+| `OLLAMA_BASE_URL` | Opcional — só é necessária se `llm_provider`/`embedding_provider` for `local`. Não há serviço Ollama no `docker-compose.aws.yml` desta branch, então fica vazia/não usada |
 | `SECRET_KEY` | Chave para assinatura JWT (≥ 32 chars) |
 | `ALGORITHM` | Algoritmo JWT (padrão: `HS256`) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Validade do access token (padrão: 60) |
