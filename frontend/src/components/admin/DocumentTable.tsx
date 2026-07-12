@@ -1,10 +1,28 @@
-import { useCallback, useEffect, useState } from 'react'
-import { RefreshCw, Trash2, Pencil, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { RefreshCw, Trash2, Pencil, ChevronLeft, ChevronRight, ExternalLink, Search, X } from 'lucide-react'
 import { authFetch, API_BASE, type DocumentListItem } from '../../lib/api'
 import EditMetadataModal from './EditMetadataModal'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 const DEFAULT_PAGE_SIZE = 20
+
+const DOC_TYPE_FILTER_OPTIONS = [
+  { value: '',          label: 'Todos os tipos' },
+  { value: 'edital',    label: 'Edital' },
+  { value: 'aditivo',   label: 'Aditivo' },
+  { value: 'resolucao', label: 'Resolução' },
+  { value: 'tutorial',  label: 'Tutorial' },
+  { value: 'portaria',  label: 'Portaria' },
+  { value: 'relatorio', label: 'Relatório' },
+]
+
+const STATUS_FILTER_OPTIONS = [
+  { value: '',           label: 'Todos os status' },
+  { value: 'active',     label: 'Ativo' },
+  { value: 'processing', label: 'Processando' },
+  { value: 'error',      label: 'Erro' },
+  { value: 'uploaded',   label: 'Enviado' },
+]
 
 interface Props {
   refreshKey?: number
@@ -56,13 +74,35 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
   const [editing, setEditing] = useState<DocumentListItem | null>(null)
+  const [editalOptions, setEditalOptions] = useState<string[]>([])
+  const [searchInput, setSearchInput] = useState('')
+  const [search, setSearch] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
 
+  // Debounce free-text search so it doesn't fire a request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim()), 300)
+    return () => clearTimeout(t)
+  }, [searchInput])
+
+  // `silent` is used for the periodic background auto-refresh: it keeps the
+  // current rows on screen (no loading skeleton) and swallows transient
+  // errors instead of blanking the table, so the table doesn't flash every
+  // time the timer ticks.
   const load = useCallback(
-    (pageIndex: number, size: number) => {
-      setLoading(true)
-      setError(false)
+    (pageIndex: number, size: number, opts?: { silent?: boolean }) => {
+      const silent = opts?.silent ?? false
+      if (!silent) {
+        setLoading(true)
+        setError(false)
+      }
       const skip = pageIndex * size
-      authFetch(`${API_BASE}/documents?skip=${skip}&limit=${size + 1}`)
+      const params = new URLSearchParams({ skip: String(skip), limit: String(size + 1) })
+      if (typeFilter) params.set('doc_type', typeFilter)
+      if (statusFilter) params.set('doc_status', statusFilter)
+      if (search) params.set('q', search)
+      authFetch(`${API_BASE}/documents?${params.toString()}`)
         .then(res => {
           if (!res.ok) throw new Error('list error')
           return res.json() as Promise<DocumentListItem[]>
@@ -71,16 +111,43 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
           setHasMore(data.length > size)
           setDocs(data.slice(0, size))
         })
-        .catch(() => setError(true))
-        .finally(() => setLoading(false))
+        .catch(() => {
+          if (!silent) setError(true)
+        })
+        .finally(() => {
+          if (!silent) setLoading(false)
+        })
     },
-    [],
+    [typeFilter, statusFilter, search],
   )
 
+  // Filters/page size changed -> start over from the first page.
   useEffect(() => {
     setPage(0)
     load(0, pageSize)
-  }, [refreshKey, load, pageSize])
+  }, [load, pageSize])
+
+  // refreshKey changes on a timer (auto-refresh) or after an action (upload,
+  // delete, reindex). Reload the page the user is currently on, silently, so
+  // it neither jumps back to page 1 nor flashes a loading/error state over
+  // rows that are still valid — skip the very first run since the effect
+  // above already loads page 0 on mount.
+  const skipNextRefresh = useRef(true)
+  useEffect(() => {
+    if (skipNextRefresh.current) {
+      skipNextRefresh.current = false
+      return
+    }
+    load(page, pageSize, { silent: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey])
+
+  useEffect(() => {
+    authFetch(`${API_BASE}/documents?doc_type=edital&limit=100`)
+      .then(res => (res.ok ? (res.json() as Promise<DocumentListItem[]>) : []))
+      .then(data => setEditalOptions(data.map(d => d.display_name)))
+      .catch(() => {})
+  }, [refreshKey])
 
   const changePage = (delta: number) => {
     const next = page + delta
@@ -146,6 +213,47 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Search + filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[220px] flex-1">
+          <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#a19e96] dark:text-[#6c717a]" />
+          <input
+            type="text"
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            placeholder="Buscar por nome do documento…"
+            className="w-full rounded-lg border border-[#e6e1d5] dark:border-[#33383f] bg-[#fdfcfa] dark:bg-[#16181c] py-2 pl-8 pr-8 text-sm text-[#1e2128] dark:text-[#eceae7] outline-none focus:border-[#2c4a86] dark:focus:border-[#8596b9]"
+          />
+          {searchInput && (
+            <button
+              type="button"
+              onClick={() => setSearchInput('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-[#a19e96] hover:text-[#1e2128] dark:text-[#6c717a] dark:hover:text-[#eceae7]"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+        <select
+          value={typeFilter}
+          onChange={e => setTypeFilter(e.target.value)}
+          className="rounded-lg border border-[#e6e1d5] dark:border-[#33383f] bg-[#fdfcfa] dark:bg-[#16181c] px-2.5 py-2 text-sm text-[#1e2128] dark:text-[#eceae7] outline-none focus:border-[#2c4a86] dark:focus:border-[#8596b9]"
+        >
+          {DOC_TYPE_FILTER_OPTIONS.map(opt => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          className="rounded-lg border border-[#e6e1d5] dark:border-[#33383f] bg-[#fdfcfa] dark:bg-[#16181c] px-2.5 py-2 text-sm text-[#1e2128] dark:text-[#eceae7] outline-none focus:border-[#2c4a86] dark:focus:border-[#8596b9]"
+        >
+          {STATUS_FILTER_OPTIONS.map(opt => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+      </div>
+
       <div className="overflow-x-auto rounded-[14px] border border-[#e6e1d5] dark:border-[#33383f]">
         <table className="min-w-full text-[13.5px] text-[#1e2128] dark:text-[#eceae7]">
           <thead>
@@ -171,7 +279,9 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
             {!loading && docs.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-[#a19e96] dark:text-[#6c717a]">
-                  Nenhum documento encontrado.
+                  {search || typeFilter || statusFilter
+                    ? 'Nenhum documento corresponde aos filtros.'
+                    : 'Nenhum documento encontrado.'}
                 </td>
               </tr>
             )}
@@ -288,6 +398,7 @@ export default function DocumentTable({ refreshKey, onChanged }: Props) {
       {editing && (
         <EditMetadataModal
           doc={editing}
+          editalOptions={editalOptions}
           onConfirm={handleUpdateMetadata}
           onCancel={() => setEditing(null)}
         />

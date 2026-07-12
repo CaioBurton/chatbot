@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { X } from 'lucide-react'
 import type { DocumentListItem } from '../../lib/api'
+import EditalRefInput from './EditalRefInput'
 
 const DOC_TYPE_OPTIONS = [
   { value: 'edital',    label: 'Edital' },
@@ -13,11 +14,12 @@ const DOC_TYPE_OPTIONS = [
 
 interface Props {
   doc: DocumentListItem
+  editalOptions: string[]
   onConfirm: (docType: string, editalRef: string, editalCycle: string) => void
   onCancel: () => void
 }
 
-export default function EditMetadataModal({ doc, onConfirm, onCancel }: Props) {
+export default function EditMetadataModal({ doc, editalOptions, onConfirm, onCancel }: Props) {
   const [docType, setDocType] = useState(doc.doc_type)
   const [editalRef, setEditalRef] = useState(doc.edital_ref ?? '')
   const [editalCycle, setEditalCycle] = useState(doc.edital_cycle ?? '')
@@ -64,12 +66,11 @@ export default function EditMetadataModal({ doc, onConfirm, onCancel }: Props) {
           {docType === 'aditivo' && (
             <label className="flex flex-col gap-1 text-xs text-[#6c7078] dark:text-[#9da2aa]">
               Edital de referência (opcional)
-              <input
-                type="text"
+              <EditalRefInput
                 value={editalRef}
-                onChange={e => setEditalRef(e.target.value)}
-                placeholder="Ex.: Edital PIBIC 2025/2026"
-                className="rounded-lg border border-[#e6e1d5] dark:border-[#33383f] bg-[#fdfcfa] dark:bg-[#16181c] px-3 py-2 text-sm text-[#1e2128] dark:text-[#eceae7] outline-none focus:border-[#2c4a86] dark:focus:border-[#8596b9]"
+                onChange={setEditalRef}
+                options={editalOptions}
+                placeholder="Selecione um edital indexado ou digite"
               />
             </label>
           )}

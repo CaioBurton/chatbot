@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent, type ChangeEvent } from 'react'
 import { FileText, CheckCircle2, XCircle, Loader2, UploadCloud } from 'lucide-react'
-import { API_BASE } from '../../lib/api'
+import { authFetch, API_BASE, type DocumentListItem } from '../../lib/api'
 import { generateUUID } from '../../lib/uuid'
 import { useIndexingProgress } from '../../hooks/useIndexingProgress'
 import UploadMetadataModal from './UploadMetadataModal'
@@ -140,10 +140,18 @@ export default function UploadZone({ onUploaded }: Props) {
   const [files, setFiles] = useState<FileEntry[]>([])
   const [pending, setPending] = useState<File[]>([])
   const [dragging, setDragging] = useState(false)
+  const [editalOptions, setEditalOptions] = useState<string[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
   // Tracks nested drag-enter/leave events so the drop-zone highlight
   // doesn't flicker when the cursor passes over child elements.
   const dragCounter = useRef(0)
+
+  useEffect(() => {
+    authFetch(`${API_BASE}/documents?doc_type=edital&limit=100`)
+      .then(res => (res.ok ? (res.json() as Promise<DocumentListItem[]>) : []))
+      .then(data => setEditalOptions(data.map(d => d.display_name)))
+      .catch(() => {})
+  }, [])
 
   const uploadFile = (file: File, displayName: string, sourceUrl: string, docType: string, editalRef: string, editalCycle: string) => {
     const id = generateUUID()
@@ -311,6 +319,7 @@ export default function UploadZone({ onUploaded }: Props) {
         <UploadMetadataModal
           fileName={pending[0].name}
           remaining={pending.length - 1}
+          editalOptions={editalOptions}
           onConfirm={handleModalConfirm}
           onCancel={handleModalCancel}
         />

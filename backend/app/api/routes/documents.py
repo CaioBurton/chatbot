@@ -181,19 +181,28 @@ async def upload_document(
     )
 
 
+_DocStatus = Literal["uploaded", "processing", "active", "error"]
+
+
 @router.get("", response_model=list[DocumentListItem])
 async def list_documents(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
+    doc_type: _DocType | None = Query(None),
+    doc_status: _DocStatus | None = Query(None),
+    q: str | None = Query(None, max_length=200),
     db: AsyncSession = Depends(get_db),
     _user=Depends(require_admin),
 ) -> list[DocumentListItem]:
-    result = await db.execute(
-        select(Document)
-        .order_by(Document.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-    )
+    stmt = select(Document).order_by(Document.created_at.desc())
+    if doc_type is not None:
+        stmt = stmt.where(Document.doc_type == doc_type)
+    if doc_status is not None:
+        stmt = stmt.where(Document.status == doc_status)
+    if q:
+        needle = f"%{q.strip()}%"
+        stmt = stmt.where(Document.display_name.ilike(needle))
+    result = await db.execute(stmt.offset(skip).limit(limit))
     docs = result.scalars().all()
     return [DocumentListItem.model_validate(doc) for doc in docs]
 
