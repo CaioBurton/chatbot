@@ -70,7 +70,7 @@ Frontend (React/Vite/TS) → Nginx :3000 → /api proxy → Backend (FastAPI) :8
 | LLM (local)      | Ollama → `gemma3:12b`                                               |
 | LLM (external)   | Gemini / OpenAI / Anthropic — switchable via `rag_config` at runtime|
 | Embeddings (local)    | `bge-m3` via Ollama                                            |
-| Embeddings (external) | Gemini `gemini-embedding-001` — switchable via `rag_config`   |
+| Embeddings (external) | Gemini `gemini-embedding-2` — switchable via `rag_config`      |
 | Reranker         | `BAAI/bge-reranker-v2-m3` (sentence-transformers, CPU on this branch)|
 | Sparse encoder   | fastembed BM42 (CPU)                                                |
 | Rate limiter     | slowapi (5 req/min on `/chat/stream`, 20 req/min on `/chat/sessions`)|

@@ -85,12 +85,12 @@ const PROVIDER_MODELS: Record<string, string[]> = {
   local: ['gemma3:12b', 'gemma3:4b', 'llama3.2:3b', 'mistral:7b'],
   openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
   anthropic: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
-  gemini: ['gemini-2.5-flash-preview-05-20', 'gemini-2.5-pro-preview-06-05', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+  gemini: ['gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'],
 }
 
 const EMBEDDING_PROVIDER_MODELS: Record<string, string[]> = {
   local: ['bge-m3'],
-  gemini: ['gemini-embedding-001'],
+  gemini: ['gemini-embedding-2', 'gemini-embedding-001'],
 }
 
 export default function RagParametersPanel() {

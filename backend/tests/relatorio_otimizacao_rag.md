@@ -2496,6 +2496,65 @@ Ganhos: Q07 (+0.7), Q08 (+0.8), Q20 (+1.5), Q24 (+1.0), Q03 (+0.5). Nenhuma qued
 
 ---
 
+## Passo 34 — `embedding_model` → `gemini-embedding-2`
+
+**Data:** 2026-07-09 (retroativo — mudança aplicada diretamente no banco pelo usuário nesse dia, fora do fluxo do relatório; documentada aqui em 2026-07-11 após auditoria de parâmetros pedida pelo usuário identificar a divergência entre `rag_config` e a última configuração registrada, Passo 32/33).
+**Motivação:** troca de `gemini-embedding-001` para `gemini-embedding-2` (mesma `output_dimensionality=1024`, mesmo vetor nomeado `dense` no Qdrant — ver `app/core/embeddings.py`). Aplicada diretamente via SQL, sem passar pelo painel admin (cujo datalist de sugestões, `RagParametersPanel.tsx`, ainda só lista `gemini-embedding-001` — desatualizado, corrigir separadamente).
+
+**Verificação de integridade:** antes de avaliar, confirmou-se que o corpus indexado no Qdrant de fato corresponde ao novo modelo (não uma mudança de config órfã com vetores antigos). Um vetor armazenado foi comparado, por similaridade de cosseno, contra embeddings gerados agora a partir do mesmo texto com os dois modelos:
+- `cosine(vetor armazenado, gemini-embedding-001)` = **-0.003** (espaços incompatíveis — como esperado para modelos diferentes)
+- `cosine(vetor armazenado, gemini-embedding-2)` = **0.836** (compatível)
+
+Confirmado: o corpus foi de fato reindexado com `gemini-embedding-2`; não há mismatch entre o que está armazenado e o que é usado nas queries.
+
+**Isolamento metodológico:** esta troca aconteceu no mesmo lote de mudanças que a Regra 10 do Passo 35 (abaixo), violando a princípio a metodologia de "uma variável por vez" seguida no resto deste relatório. Para corrigir isso retroativamente, rodou-se o full eval com o `_SYSTEM_PROMPT` **revertido a 9 regras** (estado do Passo 32) e `embedding_model=gemini-embedding-2` — isolando o efeito da troca de embedding sozinha.
+
+### Resultado (full eval, golden-set original — 30 perguntas)
+
+| Métrica | Passo 32 (`gemini-embedding-001`, 9 regras) | **Passo 34 (`gemini-embedding-2`, 9 regras)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.463/5 (89.3%) | 4.433/5 (88.7%) | −0.030 |
+| Sem alucinação | 0.933 | 0.933 | 0 |
+| Ruins (< 2.5) | 1/30 | 1/30 | 0 |
+| Excelentes (≥ 4.5) | 23/30 | 23/30 | 0 |
+
+Única oscilação ≥1.0: Q08 (4.5 → 3.5). Dentro do ruído do juiz LLM já documentado repetidamente neste relatório — **efeito líquido neutro**.
+
+**Decisão:** mantido (`gemini-embedding-2`) — troca já estava em produção havia dois dias e não há evidência de regressão; não há motivo para reverter uma mudança neutra que o usuário já havia decidido manter. Golden-set ampliado (90 perguntas) não executado neste passo.
+
+**Estado da configuração ao final deste passo:** idêntico ao Passo 32, exceto `embedding_model=gemini-embedding-2`.
+
+---
+
+## Passo 35 — Regra 10: proibir mistura de resposta parcial com a frase de fallback (Nível 1)
+
+**Data:** 2026-07-11
+**Motivação:** usuário reportou, via captura de tela do frontend, respostas onde o LLM respondia normalmente com informação real extraída do contexto e, na sequência, dentro da mesma mensagem, ainda anexava a frase literal de fallback da Regra 2 ("Não possuo informações sobre este assunto..."). Investigação confirmou que não é um bug de código: os dois guards de fallback em `rag_engine.py` (query vazia, linha ~977; zero chunks sobreviventes ao reranker, linha ~1133) só disparam *no lugar de* chamar o LLM, nunca depois — nos casos reportados o pipeline retornou chunks e chamou o LLM normalmente. O texto de fallback estava sendo gerado pelo próprio Gemini como parte da resposta: o contexto respondia à pergunta em nível geral (ex: o que é o PIBIC, período de vigência do edital) mas não continha o procedimento específico pedido (ex: "como solicito"), e o modelo aplicava a Regra 2 no nível do sub-tópico não coberto, em vez de tratá-la como decisão binária para a mensagem inteira.
+
+**Mudança testada:** uma regra nova (Regra 10), de baixo risco — não afrouxa a Regra 1-3 (nunca inventar, responder só com base no contexto), apenas proíbe a combinação das duas saídas na mesma resposta:
+> "Nunca combine uma resposta baseada no contexto com a frase de fallback da Regra 2 na mesma mensagem. Se você já extraiu alguma informação relevante do contexto para responder, mesmo que parcial, encerre a resposta com essa informação — não adicione a frase 'Não possuo informações...' depois. Reserve essa frase exclusivamente para quando não houver NENHUMA informação relevante no contexto para a pergunta."
+
+Diferente da Regra 10 testada e revertida no Passo 33 (que permitia resposta parcial com limitação explicitada, e piorou o índice de alucinação), esta regra não pede ao modelo para fazer nada novo com informação incompleta — só resolve uma inconsistência de formatação/redação da própria saída.
+
+**Isolamento metodológico:** a primeira rodada deste teste (2026-07-11, mesmo dia) mediu 10 regras contra o baseline do Passo 32 (9 regras + `gemini-embedding-001`) — uma comparação com duas variáveis, já que a produção já estava em `gemini-embedding-2` havia dois dias sem que este relatório tivesse registrado a troca (ver Passo 34 acima). Reexecutado corretamente aqui contra o baseline isolado do Passo 34 (9 regras + `gemini-embedding-2`), mantendo apenas a Regra 10 como variável.
+
+### Resultado (full eval, golden-set original — 30 perguntas, por instrução do usuário)
+
+| Métrica | Passo 34 (baseline: `gemini-embedding-2`, 9 regras) | **Passo 35 (+Regra 10 anti-mistura)** | Δ |
+|---|---|---|---|
+| Pontuação média | 4.433/5 (88.7%) | **4.498/5 (90.0%)** | **+0.065** |
+| Sem alucinação | 0.933 | **0.967** | **+0.033** |
+| Ruins (< 2.5) | 1/30 | 1/30 | 0 |
+| Excelentes (≥ 4.5) | 23/30 | 24/30 | +1 |
+
+Nenhuma queda maior que −0.5, e o índice de sem-alucinação **melhora** em vez de piorar — diferente do trade-off observado no Passo 33 da última vez que se mexeu na área fallback/resposta parcial. Efeito da Regra 10 isolado do ruído da troca de embedding: **+0.065 líquido, atribuível exclusivamente à regra**.
+
+**Decisão:** mantido. Golden-set ampliado (90 perguntas) não executado neste passo, por instrução explícita do usuário — deve ser rodado antes do próximo passo que toque em retrieval/prompt para confirmar ausência de regressão nesse conjunto.
+
+**Estado da configuração ao final deste passo:** `_SYSTEM_PROMPT` com 10 regras (era 9); `embedding_model=gemini-embedding-2` (desde o Passo 34); nenhuma outra mudança de pipeline. `RATE_LIMIT_ENABLED` usado como `false` apenas durante a execução dos evals deste passo e do Passo 34, revertido para `true` (padrão de produção) imediatamente após.
+
+---
+
 ### Documento faltante resolvido: Resolução CEPEX/UFPI n° 345/2022 (2026-07-08)
 
 A Resolução 345/2022 (fonte de Q86-88, "Bolsas PROPESQI"), identificada como ausente do corpus no Passo 24, foi enviada pelo usuário e indexada com sucesso (19 chunks), junto com a Resolução CEPEX/UFPI n° 355/2022 que a ratifica (7 chunks). Smoke test dirigido: **Q86 (0.0→4.0) e Q87 (0.0→4.0) corrigidas**. Q88 permanece em 0.5 — mas por um motivo diferente do original: agora cita a fonte correta (Resolução 355/2022) porém extrai o fato errado (descreve o processo seletivo em vez do "Termo de Outorga" exigido pelo gabarito) — uma falha de precisão de recall dentro do documento certo, não mais de documento ausente.

@@ -603,6 +603,11 @@ documento em minha base de dados..." ou "com base no contexto apresentado...". V
 9. Os números entre colchetes (ex: "[1]", "[2]") antes de cada documento no contexto são \
 apenas para sua referência interna — nunca os mencione na resposta. Refira-se aos documentos \
 pelo nome (ex: "conforme o Edital PIBIC 2025/2026...").
+10. Nunca combine uma resposta baseada no contexto com a frase de fallback da Regra 2 na \
+mesma mensagem. Se você já extraiu alguma informação relevante do contexto para responder, \
+mesmo que parcial, encerre a resposta com essa informação — não adicione a frase "Não possuo \
+informações..." depois. Reserve essa frase exclusivamente para quando não houver NENHUMA \
+informação relevante no contexto para a pergunta.
 
 CONTEXTO DOS DOCUMENTOS:
 {context}\
@@ -709,13 +714,22 @@ async def _anthropic_generate(prompt: str, temperature: float, settings, model: 
 
 async def _gemini_generate(prompt: str, temperature: float, settings, model: str) -> str:
     """Call Google Gemini generateContent API (non-streaming)."""
+    # thinkingBudget=0: newer Gemini models (3.x, 2.5) reason by default and
+    # bill those "thought" tokens against maxOutputTokens, so a long RAG
+    # prompt can exhaust the budget before any answer text is emitted. Models
+    # that don't support thinking (e.g. gemini-3.1-flash-lite) accept and
+    # ignore the field, so this is safe across all Gemini models in use.
     async with httpx.AsyncClient(timeout=300.0) as http:
         resp = await http.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             params={"key": settings.GOOGLE_API_KEY},
             json={
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": temperature, "maxOutputTokens": _LLM_MAX_TOKENS},
+                "generationConfig": {
+                    "temperature": temperature,
+                    "maxOutputTokens": _LLM_MAX_TOKENS,
+                    "thinkingConfig": {"thinkingBudget": 0},
+                },
             },
         )
         resp.raise_for_status()
@@ -1567,7 +1581,12 @@ async def rag_stream(
                     params={"key": settings.GOOGLE_API_KEY, "alt": "sse"},
                     json={
                         "contents": gemini_contents,
-                        "generationConfig": {"temperature": 0.1, "maxOutputTokens": _LLM_MAX_TOKENS},
+                        "generationConfig": {
+                            "temperature": 0.1,
+                            "maxOutputTokens": _LLM_MAX_TOKENS,
+                            # See _gemini_generate for why thinkingBudget=0 is required.
+                            "thinkingConfig": {"thinkingBudget": 0},
+                        },
                     },
                 ) as resp:
                     resp.raise_for_status()

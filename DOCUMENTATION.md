@@ -447,7 +447,7 @@ Consulta do usuário
         │
         ▼
 9. Montagem do prompt + Streaming LLM
-   Template com CONTEXTO DOS DOCUMENTOS + 9 REGRAS (histórico entra como
+   Template com CONTEXTO DOS DOCUMENTOS + 10 REGRAS (histórico entra como
    turnos role: user/assistant separados no array de mensagens, não no
    template — evita duplicar o mesmo histórico duas vezes no prompt):
    1. Responder EXCLUSIVAMENTE com base nos documentos
@@ -459,6 +459,7 @@ Consulta do usuário
    7. Citar aditivo/SIGAA explicitamente quando presentes no contexto
    8. Sem frases de preenchimento ("de acordo com o documento...")
    9. Não mencionar a numeração [1]/[2] do contexto na resposta
+   10. Nunca combinar resposta parcial com a frase de fallback da Regra 2
    Streaming via Ollama /api/chat ou API externa (SSE: token, sources, done)
         │
         ▼
@@ -1007,5 +1008,9 @@ A troca de bge-m3 (local) para Gemini (`gemini-embedding-001`) anulou quase todo
 | 31 | Guard `_GENERIC_PROGRAM_DEFINITION_RE` (Q01/Q16) | 4.360/5 | 3.846/5 |
 | **32** | **Limpeza do system prompt (Nível 1)** | **4.463/5 (89.3%)** | **3.826/5 (76.5%)** |
 | 33 | Regras 10/11 (resposta parcial) — testado e revertido | 4.413/5 | 3.892/5 |
+| 34 | `embedding_model` → `gemini-embedding-2` (isolado, 9 regras) | 4.433/5 (88.7%) — neutro | — (não executado neste passo) |
+| **35** | **Regra 10: proibir mistura resposta+fallback** (isolado do Passo 34) | **4.498/5 (90.0%)** | — (não executado neste passo) |
 
-**Estado de produção atual: configuração do Passo 32.** O Passo 33 melhorou a pontuação agregada mas piorou a métrica de ausência de alucinação nos dois golden-sets (−0.033 e −0.022) — revertido por esse motivo; ver `relatorio_otimizacao_rag.md` para a análise completa passo a passo.
+**Estado de produção atual: configuração do Passo 35.** O Passo 33 melhorou a pontuação agregada mas piorou a métrica de ausência de alucinação nos dois golden-sets (−0.033 e −0.022) — revertido por esse motivo. O Passo 34 (troca de `embedding_model`) foi aplicado em produção antes deste relatório registrar a mudança; auditoria retroativa confirmou efeito neutro (−0.030, dentro do ruído) e integridade do corpus indexado (vetor armazenado bate com `gemini-embedding-2`, não com `gemini-embedding-001`). O Passo 35 corrigiu um problema distinto (LLM combinando resposta real com a frase de fallback na mesma mensagem), medido isoladamente contra o baseline do Passo 34 — a métrica de ausência de alucinação melhorou (0.933 → 0.967) no golden-set original; ver `relatorio_otimizacao_rag.md` para a análise completa passo a passo.
+
+**Nota metodológica:** um teste de `gemini-3.5-flash` como `llm_model` (2026-07-11) foi revertido — o modelo tem "thinking" ativado por padrão que consome o orçamento de `maxOutputTokens`, e mesmo com `thinkingConfig.thinkingBudget=0` aplicado (mantido no código, é um no-op seguro para `gemini-3.1-flash-lite`), o modelo ainda produzia respostas vazias/truncadas de forma intermitente (~13% das perguntas), abaixo do baseline. `llm_model` permanece `gemini-3.1-flash-lite`.

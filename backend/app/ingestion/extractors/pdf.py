@@ -20,10 +20,16 @@ def _sync_extract(file_path: str) -> list[dict[str, Any]]:
     """Run pdfplumber extraction synchronously (called in executor)."""
     import pdfplumber
 
+    # x_tolerance=1 (pdfplumber default is 3): some PDFs — observed in the
+    # 2026/2027 PIBIC/PIBITI/PIBIC-EM editais — use tight character spacing
+    # that falls under the default gap threshold, causing extract_text() to
+    # merge adjacent words ("ANEXOVI—Critériosparaavaliação..."). Verified
+    # against several already-clean PDFs with no regression before lowering
+    # this globally.
     pages: list[dict[str, Any]] = []
     with pdfplumber.open(file_path) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text() or ""
+            text = page.extract_text(x_tolerance=1) or ""
             pages.append({"page_number": i, "text": text})
     return pages
 
